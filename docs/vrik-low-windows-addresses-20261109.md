@@ -44,3 +44,11 @@ configuration to build the bundled redscript compiler, is not installed/on PATH 
 A game run must confirm nonzero
 bone count, resolved head and arm indices, increasing `matchCalls`/`freshSolve`, and hands following
 both controllers. Test across save reload and equipment changes as these rebind the skeleton.
+
+## Test release
+
+`.github/workflows/quest2-test-release.yml` builds the exact dispatched commit on a Windows runner,
+runs the isolated lookup test, and publishes `0.2.3-quest2-fix.1` as a prerelease only after a successful
+Release compilation. The ZIP is a DLL-only patch for an existing complete 0.2.3 installation; it includes
+installation/rollback instructions and a separate SHA-256 checksum. No local logs or personal settings
+are packaged. This provides a game-test build without installing Rust on the developer's machine.

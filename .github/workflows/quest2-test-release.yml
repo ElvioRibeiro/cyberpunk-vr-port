@@ -1,0 +1,96 @@
+name: Quest 2 VRIK test release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact release source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Rust for the bundled script compiler
+        shell: pwsh
+        run: |
+          rustup default stable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo --version
+
+      - name: Test low-address animation lookup
+        shell: pwsh
+        run: python tools/vrik_tests/low_address_lookup_test.py
+
+      - name: Configure the plugin
+        shell: pwsh
+        run: cmake -S . -B build/release -A x64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+      - name: Build the Release DLL
+        shell: pwsh
+        run: cmake --build build/release --config Release --target cyberpunkvrport_stereo --parallel 2
+
+      - name: Package the replacement DLL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = 'dist/Quest2-VRIK-fix'
+          $destination = "$package/red4ext/plugins/cyberpunkvrport"
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          Copy-Item 'build/release/bin/red4ext/plugins/cyberpunkvrport/Release/cyberpunkvrport.dll' $destination
+          @'
+          Quest 2 VRIK test patch for CyberpunkVR Port 0.2.3 / Cyberpunk 2077 2.5
+
+          Requires an existing complete installation of CyberpunkVR Port 0.2.3.
+          This archive contains the replacement plugin DLL only.
+
+          INSTALL
+          1. Close Cyberpunk 2077.
+          2. Back up red4ext/plugins/cyberpunkvrport/cyberpunkvrport.dll outside
+             the red4ext/plugins directory. Do not leave another .dll beside it.
+          3. Extract this ZIP into the game root and replace cyberpunkvrport.dll.
+          4. Load a save, on foot and outside a scripted scene, and move both Touch controllers.
+
+          CHECK
+          Avatar hands should follow the controllers. If they do not, enable verbose
+          logging in the launcher and use F10 > Avatar > Log VR Diag.
+          Collect log/cyberpunkvrport.log and log/vrik_diag.txt from the plugin folder.
+
+          RESTORE
+          Close the game and restore your backed-up DLL, or reinstall upstream 0.2.3.
+
+          This build passed an isolated pointer-lookup test and a Release compilation.
+          Its behavior in the game still needs testing. It fixes readable low-address
+          Windows animation-system/metaRig pointers being rejected by an address-range filter.
+          '@ | Set-Content "$package/README-TEST.txt" -Encoding utf8
+          "Source commit: $env:GITHUB_SHA" | Add-Content "$package/README-TEST.txt"
+          Compress-Archive -Path "$package/*" -DestinationPath 'dist/CyberpunkVRPort-0.2.3-quest2-fix.1.zip'
+          $hash = (Get-FileHash 'dist/CyberpunkVRPort-0.2.3-quest2-fix.1.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  CyberpunkVRPort-0.2.3-quest2-fix.1.zip" | Set-Content 'dist/SHA256SUMS.txt' -Encoding ascii
+
+      - name: Publish the test prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          @'
+          Test patch for stationary controller-driven hands on Quest 2.
+
+          **Requires the complete CyberpunkVR Port 0.2.3 installation and Cyberpunk 2077 2.5.**
+          This ZIP replaces only `red4ext/plugins/cyberpunkvrport/cyberpunkvrport.dll`.
+          Close the game, back up the original DLL outside the plugin directory, and extract into the game root.
+          Restore the original DLL to roll back. Installation instructions are included in the ZIP.
+
+          The patch validates known animation-system and metaRig pointers by readable memory rather than
+          rejecting Windows allocations below 1 TiB. Untyped memory-scan filtering remains unchanged.
+
+          Validation: isolated low/high-address lookup test and complete Release build.
+          **In-game validation is pending.** If hands remain stationary, collect verbose `cyberpunkvrport.log`
+          and a fresh `vrik_diag.txt` using F10 > Avatar > Log VR Diag.
+          '@ | Set-Content 'dist/release-notes.md' -Encoding utf8
+          gh release create '0.2.3-quest2-fix.1' 'dist/CyberpunkVRPort-0.2.3-quest2-fix.1.zip' 'dist/SHA256SUMS.txt' --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --prerelease --title '0.2.3 Quest 2 VRIK test fix 1' --notes-file 'dist/release-notes.md'
