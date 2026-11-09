@@ -52,3 +52,7 @@ runs the isolated lookup test, and publishes `0.2.3-quest2-fix.1` as a prereleas
 Release compilation. The ZIP is a DLL-only patch for an existing complete 0.2.3 installation; it includes
 installation/rollback instructions and a separate SHA-256 checksum. No local logs or personal settings
 are packaged. This provides a game-test build without installing Rust on the developer's machine.
+
+Clean-checkout build adjustments: the CMake entry for the optional, unpublished `tools/rtti_dump`
+is conditional on that tool being present; the workflow quotes the CMake policy-version argument
+so PowerShell passes `3.5` intact. Neither adjustment changes the plugin's runtime behavior.
