@@ -10,6 +10,9 @@ jobs:
   build:
     runs-on: windows-2025
     timeout-minutes: 60
+    env:
+      # Compile two source files per MSVC project, with at most two projects in parallel.
+      CXXFLAGS: /MP2
     steps:
       - name: Check out the exact release source
         uses: actions/checkout@v4

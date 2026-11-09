@@ -56,3 +56,9 @@ are packaged. This provides a game-test build without installing Rust on the dev
 Clean-checkout build adjustments: the CMake entry for the optional, unpublished `tools/rtti_dump`
 is conditional on that tool being present; the workflow quotes the CMake policy-version argument
 so PowerShell passes `3.5` intact. Neither adjustment changes the plugin's runtime behavior.
+
+The first complete compile exposed a stale SDK gitlink: the committed marklove5102 revision lacked
+`entIPositionProvider.hpp` and the return-value signatures used by the port's spawning code. The SDK
+submodule now uses canonical `WopsS/RED4ext.SDK`, pinned at `26cf86702647c06bae2f1a92cb5affc64ab65d23`
+(2026-11-05). Its position-provider and population/stub/ID-system declarations match the current port.
+The CI enables MSVC `/MP2` to shorten clean builds without changing runtime settings.
