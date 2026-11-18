@@ -685,6 +685,7 @@ void PollLiveControls() {
     float xrBikeHeadOffsetZ = g_liveControls.xrBikeHeadOffsetZ;
     int xrWheelGrab = g_liveControls.xrWheelGrab;
     int xrMenuGesture = g_liveControls.xrMenuGesture;
+    int xrThumbRestStickClick = g_liveControls.xrThumbRestStickClick;
     int xrVrInterface = g_liveControls.xrVrInterface;
     int xrHandPhysics = g_liveControls.xrHandPhysics;
     int xrVrWeaponWheel = g_liveControls.xrVrWeaponWheel;
@@ -1700,6 +1701,11 @@ void PollLiveControls() {
             xrHandPhysics = intValue;
             continue;
         }
+        if (sscanf_s(line, "xr_thumbrest_stick_click=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_thumbrest_stick_click = %d", &intValue) == 1) {
+            xrThumbRestStickClick = intValue;
+            continue;
+        }
         if (sscanf_s(line, "xr_menu_gesture=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_menu_gesture = %d", &intValue) == 1) {
             xrMenuGesture = intValue;
@@ -1961,6 +1967,7 @@ void PollLiveControls() {
     g_liveControls.xrBikeHeadOffsetZ = clampVehOff(xrBikeHeadOffsetZ);
     g_liveControls.xrWheelGrab = xrWheelGrab != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = xrMenuGesture != 0 ? 1 : 0;
+    g_liveControls.xrThumbRestStickClick = xrThumbRestStickClick != 0 ? 1 : 0;
     g_liveControls.xrVrInterface = xrVrInterface != 0 ? 1 : 0;
     g_liveControls.xrHandPhysics = xrHandPhysics != 0 ? 1 : 0;
     g_liveControls.xrVrWeaponWheel = xrVrWeaponWheel != 0 ? 1 : 0;
@@ -2343,6 +2350,7 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrBikeHeadOffsetZ = g_liveControls.xrBikeHeadOffsetZ;
     state.xrWheelGrab = g_liveControls.xrWheelGrab;
     state.xrMenuGesture = g_liveControls.xrMenuGesture;
+    state.xrThumbRestStickClick = g_liveControls.xrThumbRestStickClick;
     state.xrVrInterface = g_liveControls.xrVrInterface;
     state.xrHandPhysics = g_liveControls.xrHandPhysics;
     state.xrVrWeaponWheel = g_liveControls.xrVrWeaponWheel;
@@ -2739,6 +2747,7 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_bike_head_offset_z=%.4f\n", state.xrBikeHeadOffsetZ);
     fprintf(file, "xr_wheel_grab=%d\n", state.xrWheelGrab != 0 ? 1 : 0);
     fprintf(file, "xr_menu_gesture=%d\n", state.xrMenuGesture != 0 ? 1 : 0);
+    fprintf(file, "xr_thumbrest_stick_click=%d\n", state.xrThumbRestStickClick != 0 ? 1 : 0);
     fprintf(file, "xr_vr_interface=%d\n", state.xrVrInterface != 0 ? 1 : 0);
     fprintf(file, "xr_hand_physics=%d\n", state.xrHandPhysics != 0 ? 1 : 0);
     fprintf(file, "xr_vr_weapon_wheel=%d\n", state.xrVrWeaponWheel != 0 ? 1 : 0);
@@ -2921,6 +2930,7 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     // entry points must not be able to disagree about what a valid value is.
     g_liveControls.xrWheelGrab = state->xrWheelGrab != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = state->xrMenuGesture != 0 ? 1 : 0;
+    g_liveControls.xrThumbRestStickClick = state->xrThumbRestStickClick != 0 ? 1 : 0;
     g_liveControls.xrVrInterface = state->xrVrInterface != 0 ? 1 : 0;
     g_liveControls.xrHandPhysics = state->xrHandPhysics != 0 ? 1 : 0;
     g_liveControls.xrVrWeaponWheel = state->xrVrWeaponWheel != 0 ? 1 : 0;

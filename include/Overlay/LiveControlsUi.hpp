@@ -161,6 +161,8 @@ struct LiveControlsUiState {
     float xrWheelRadius;
     // The VR menu's grip swipe (1 = on); L3 + R3 always opens it.
     int xrMenuGesture = 1;
+    // Opt-in: thumb-rest touch OR physical stick click, per hand, before existing input routing.
+    int xrThumbRestStickClick = 0;
     int xrVrInterface = 1;
     int xrHandPhysics = 1;
     // The port's weapon wheel on a held Y (1 = on); off, the game's own.

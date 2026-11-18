@@ -981,6 +981,7 @@ private:
     XrAction m_gripAction = XR_NULL_HANDLE;              // Float, per hand
     XrAction m_gripForceAction = XR_NULL_HANDLE;         // Float, per hand: squeezed past closed. Index only
     XrAction m_thumbstickClickAction = XR_NULL_HANDLE;   // Bool, per hand (L3/R3)
+    XrAction m_thumbRestTouchAction = XR_NULL_HANDLE;    // Bool, per hand; optional stick-click fallback
     XrAction m_primaryButtonAction = XR_NULL_HANDLE;     // Bool, per hand (X / A)
     XrAction m_secondaryButtonAction = XR_NULL_HANDLE;   // Bool, per hand (Y / B)
     XrAction m_menuButtonAction = XR_NULL_HANDLE;        // Bool, global menu/start action

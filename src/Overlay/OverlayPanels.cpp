@@ -1188,6 +1188,12 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
             else {
             UI::TextWrapped("Movement, weapon aiming and physical interaction shortcuts.");
 
+            changed |= CheckboxInt("Thumb rests as L3 / R3", &state.xrThumbRestStickClick);
+            if (UI::IsItemHovered()) {
+                UI::SetTooltip("Left stick click OR left thumb-rest touch; right stick click OR right thumb-rest touch.\n"
+                               "Touch acts as a held click. Physical clicks still work. Requires thumb-rest touch support.\n"
+                               "Touching both rests also activates the existing L3 + R3 menu gesture.");
+            }
             changed |= CheckboxInt("Left-handed controls", &state.xrLeftHanded);
             if (UI::IsItemHovered()) {
                 UI::SetTooltip("The two controllers trade roles: the left trigger fires and the right one aims,\n"

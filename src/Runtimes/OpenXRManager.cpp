@@ -850,6 +850,7 @@ bool OpenXRManager::Init() {
             makeAction(m_gripAction,            XR_ACTION_TYPE_FLOAT_INPUT,    "grip",             "Grip",                 true);
             makeAction(m_gripForceAction,       XR_ACTION_TYPE_FLOAT_INPUT,    "grip_force",       "Grip Force",           true);
             makeAction(m_thumbstickClickAction, XR_ACTION_TYPE_BOOLEAN_INPUT,  "thumbstick_click", "Thumbstick Click",     true);
+            makeAction(m_thumbRestTouchAction, XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_rest_touch", "Thumb Rest Touch", true);
             makeAction(m_primaryButtonAction,   XR_ACTION_TYPE_BOOLEAN_INPUT,  "primary_button",   "Primary Button (A/X)", true);
             makeAction(m_secondaryButtonAction, XR_ACTION_TYPE_BOOLEAN_INPUT,  "secondary_button", "Secondary Button (B/Y)", true);
             makeAction(m_menuButtonAction, XR_ACTION_TYPE_BOOLEAN_INPUT,
@@ -877,6 +878,8 @@ bool OpenXRManager::Init() {
             std::vector<XrActionSuggestedBinding> v;
             v.reserve(list.size());
             for (const Bind& b : list) {
+                // A failed optional action must not reject the rest of this profile's bindings.
+                if (b.action == XR_NULL_HANDLE) continue;
                 XrPath p = XR_NULL_PATH;
                 if (XR_SUCCEEDED(xrStringToPath(m_instance, b.path, &p))) {
                     v.push_back({ b.action, p });
@@ -958,6 +961,9 @@ bool OpenXRManager::Init() {
             { m_thumbstickAction,      "/user/hand/right/input/thumbstick" },
             { m_thumbstickClickAction, "/user/hand/left/input/thumbstick/click" },
             { m_thumbstickClickAction, "/user/hand/right/input/thumbstick/click" },
+            // These paths are defined for Touch; do not alias other controllers' trackpad touch.
+            { m_thumbRestTouchAction,  "/user/hand/left/input/thumbrest/touch" },
+            { m_thumbRestTouchAction,  "/user/hand/right/input/thumbrest/touch" },
             { m_triggerAction,         "/user/hand/left/input/trigger/value" },
             { m_triggerAction,         "/user/hand/right/input/trigger/value" },
             { m_gripAction,            "/user/hand/left/input/squeeze/value" },
@@ -2601,6 +2607,7 @@ void OpenXRManager::Shutdown() {
     m_gripAction = XR_NULL_HANDLE;
     m_gripForceAction = XR_NULL_HANDLE;
     m_thumbstickClickAction = XR_NULL_HANDLE;
+    m_thumbRestTouchAction = XR_NULL_HANDLE;
     m_primaryButtonAction = XR_NULL_HANDLE;
     m_secondaryButtonAction = XR_NULL_HANDLE;
     m_menuButtonAction = XR_NULL_HANDLE;

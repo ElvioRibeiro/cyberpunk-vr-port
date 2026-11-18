@@ -135,6 +135,8 @@ struct LiveControls {
     // 1 (default) = the right grip held and swept straight down opens or closes the VR menu (never while that
     // hand holds the steering wheel). 0 = only L3 + R3 does.
     volatile int xrMenuGesture = 1;
+    // Opt-in: thumb-rest touch OR physical stick click, per hand, before existing input routing.
+    volatile int xrThumbRestStickClick = 0;
     // Master switches preserve individual gesture, collision and grab preferences.
     volatile int xrVrInterface = 1;
     volatile int xrHandPhysics = 1;

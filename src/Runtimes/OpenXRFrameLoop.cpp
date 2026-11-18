@@ -1887,13 +1887,15 @@ DWORD OpenXRManager::FrameThreadMain() {
                             return st.currentState;
                         return 0.0f;
                     };
+                    const bool thumbRestClick=g_liveControls.xrThumbRestStickClick!=0;
                     auto getBool = [&](XrAction a) -> bool {
                         XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
                         gi.action = a;
                         gi.subactionPath = m_handPaths[i];
                         XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
                         const bool active=XR_SUCCEEDED(xrGetActionStateBoolean(m_session, &gi, &st)) && st.isActive;
-                        if(i==0 && a==m_thumbstickClickAction)leftClickValid=active;
+                        if(i==0 && (a==m_thumbstickClickAction || (thumbRestClick && a==m_thumbRestTouchAction)))
+                            leftClickValid |= active;
                         if(active)return st.currentState != XR_FALSE;
                         return false;
                     };
@@ -1923,7 +1925,11 @@ DWORD OpenXRManager::FrameThreadMain() {
                         grip = fingers ? 1.0f : 0.0f;
                     float sx = 0.0f, sy = 0.0f;
                     getVec2(m_thumbstickAction, sx, sy);
-                    const bool sclick = getBool(m_thumbstickClickAction);
+                    // Merge once, before menu/scanner/D-pad/handedness routing, so fallback clicks
+                    // retain the same held/release semantics and edge handling as physical L3/R3.
+                    const bool physicalClick=getBool(m_thumbstickClickAction);
+                    const bool restTouch=thumbRestClick && m_thumbRestTouchAction!=XR_NULL_HANDLE && getBool(m_thumbRestTouchAction);
+                    const bool sclick=physicalClick || restTouch;
                     auto& uiHand=uiTracking.hands[i];
                     uiHand.stickClick=sclick;uiHand.trigger=trig;uiHand.grip=grip;uiHand.stickY=sy;
                     uiHand.valid=poseValid;

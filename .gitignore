@@ -19,6 +19,7 @@ tools/*
 !tools/roomscale_tests/
 !tools/il2cpp_study/
 !tools/scanner_input_tests/
+!tools/thumbrest_tests/
 !tools/body_rotation_tests/
 !tools/body_rotation_tests/*.py
 tools/body_rotation_tests/__pycache__/
