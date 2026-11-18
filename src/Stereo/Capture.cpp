@@ -1,3 +1,4 @@
+#include "Stereo/EngineStereo.hpp"
 #include "Natives/MenuSurface.hpp"
 #include "Utils/DebugGate.hpp"
 #include "Render/ConstantUploadRegistry.hpp"
@@ -414,12 +415,13 @@ void rtv_descriptor_heap_created(UINT slots) {
     rtvDescriptors.Reserve(size_t(g_rtv_heap_slots.fetch_add(slots,std::memory_order_relaxed)+slots));
 }
 uint32_t rtv_descriptor_limit() { return uint32_t(rtvDescriptors.Limit()); }
-static void rtv_dim_register(D3D12_CPU_DESCRIPTOR_HANDLE handle,ID3D12Resource* res) {
+// Publish dimensions and supported-view metadata together when a descriptor slot is created/recycled.
+static void rtv_dim_register(D3D12_CPU_DESCRIPTOR_HANDLE handle,ID3D12Resource* res,const D3D12_RENDER_TARGET_VIEW_DESC* view) {
     if(!handle.ptr)return;
     D3D12_RESOURCE_DESC desc{};
     cvr::render::DescriptorTarget target{};
     if(res && mirror_get_resource_desc(res,&desc) && desc.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D)
-        target={reinterpret_cast<uintptr_t>(res),uint32_t(desc.Width),desc.Height};
+        target={reinterpret_cast<uintptr_t>(res),uint32_t(desc.Width),desc.Height,cvr::vrs::StereoTargetCompatible(desc,view)};
     bool evicted=false;
     rtvDescriptors.Store(handle.ptr,target,&evicted);
     g_rtv_dim_count.store(uint32_t(rtvDescriptors.Size()),std::memory_order_relaxed);
@@ -631,7 +633,7 @@ void optics_material_snapshot(uint32_t,const void*);
     g_orig_CreateRTV(self, res, desc, dst);
     cvr::stereo::scene_state::RtvCreated(res,desc,dst);
     if(cvr::stereo::probe::internalCommands)return;
-    rtv_dim_register(dst, res);   // broad map (any format) for the crop-blit RT-size probe
+    rtv_dim_register(dst, res,desc);   // broad map (any format) for the crop-blit RT-size probe
     hud_register_rtv(res, desc, dst);
     DXGI_FORMAT format = desc ? desc->Format : DXGI_FORMAT_UNKNOWN;
     if (!desc && res) {
@@ -770,7 +772,19 @@ void STDMETHODCALLTYPE hk_OMSetRenderTargets(
         cvr::stereo::target_handoff::Targets(self,count,handles,contiguous,depth);
         cvr::stereo::target_access::Targets(self,count,handles,contiguous,depth);return;}
     if(cvr::stereo::retained_geometry::Active())cvr::stereo::retained_geometry::BeforeTargets(self,count,handles,contiguous,depth);
-    cvr::vrs::Targets(self,handles?count:0,depth && depth->ptr);
+    // Resolve every MRT from the existing descriptor cache only while VRS is on.
+    // Missing, array, MSAA, nonzero mip or mismatched targets keep stereo VRS native.
+    uint32_t vrsWidth=0,vrsHeight=0;
+    if(cvr::vrs::enabled.load(std::memory_order_relaxed) && cvr::engine_stereo::Enabled() && handles && count>=3 && count<=4){
+        const UINT step=g_game_device?g_game_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV):0;
+        for(UINT i=0;i<count;++i){
+            const auto target=rtvDescriptors.Read(contiguous?handles[0].ptr+SIZE_T(step)*i:handles[i].ptr);
+            if(!target || !target->singleSample2DMipZero || (contiguous && !step) ||
+               (i && (target->width!=vrsWidth || target->height!=vrsHeight))){vrsWidth=vrsHeight=0;break;}
+            vrsWidth=target->width;vrsHeight=target->height;
+        }
+    }
+    cvr::vrs::Targets(self,handles?count:0,depth && depth->ptr,vrsWidth,vrsHeight);
     cvr::optics::Targets(self,count,handles,contiguous,depth);
     if(handles && cvr::menu_surface::Waiting()) {
         const UINT step=g_game_device?g_game_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV):0;
@@ -1859,3 +1873,13 @@ void STDMETHODCALLTYPE hk_ResourceBarrier(ID3D12GraphicsCommandList* self,
 
 }  // namespace detail
 }  // namespace cvr
+
+// Copies are deliberately not inferred from stale target dimensions. Re-creation can
+// revalidate a slot; otherwise the stereo MVP leaves it on the game's VRS policy.
+void cvr::vrs::RtvDescriptorsOverwritten(ID3D12Device* device,UINT count,
+    const D3D12_CPU_DESCRIPTOR_HANDLE* ranges,const UINT* sizes) {
+    if(!device || !ranges)return;
+    const auto step=device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    for(UINT i=0;i<count;++i)for(UINT j=0;j<(sizes?sizes[i]:1);++j)
+        cvr::detail::rtvDescriptors.InvalidateView(ranges[i].ptr+SIZE_T(step)*j);
+}

@@ -8,7 +8,7 @@
 #include <unordered_set>
 
 namespace cvr::render {
-struct DescriptorTarget {uintptr_t resource{};uint32_t width{},height{};};
+struct DescriptorTarget {uintptr_t resource{};uint32_t width{},height{};bool singleSample2DMipZero{};};
 // Metadata only: no COM references and no GPU allocations. CPU descriptors can
 // be recycled, so a replacement publishes resource and dimensions together.
 // Capacity is the floor; Reserve raises it to the number of descriptor slots the engine's heaps
@@ -54,6 +54,11 @@ public:
         std::lock_guard lock(mutex);const auto it=entries.find(handle);
         if(it==entries.end())return {};
         recent.splice(recent.begin(),recent,it->second.recent);return it->second.target;
+    }
+    // A descriptor copy may change mip/layout without a resource creation callback.
+    void InvalidateView(uintptr_t handle) {
+        std::lock_guard lock(mutex);
+        if(auto it=entries.find(handle);it!=entries.end())it->second.target.singleSample2DMipZero=false;
     }
     size_t Size(){std::lock_guard lock(mutex);return entries.size();}
 };

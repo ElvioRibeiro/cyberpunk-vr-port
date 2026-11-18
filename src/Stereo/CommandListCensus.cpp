@@ -1,3 +1,4 @@
+#include "Stereo/EngineStereo.hpp"
 #include "Natives/MenuSurface.hpp"
 #include "Core/Paths.hpp"
 #include "Utils/DebugGate.hpp"
@@ -2309,7 +2310,9 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugEiNullArgs = 0;
     cvr::stereo::early_depth::Unsupported(self,3);
     {
         const auto base=reinterpret_cast<uintptr_t>(g_exe_base);
-        cvr::vrs::PrepareDraw(self,base && t_current_node_work>base?uint32_t(t_current_node_work-base):0,t_view_side,e->shading_rate_original,e->shading_image_original);
+        // Unclassified indirect signatures can mutate graphics state or dispatch compute.
+        if(cvr::engine_stereo::Enabled() && !cvr::stereo::indirect_policy::PureDrawStride(sig))cvr::vrs::Restore(self);
+        else cvr::vrs::PrepareDraw(self,base && t_current_node_work>base?uint32_t(t_current_node_work-base):0,t_view_side,e->shading_rate_original,e->shading_image_original);
         if(!cvr::cascades::SkipIndirect(self,sig)){
             if(cvr::stereo::indirect_policy::PureDrawStride(sig))cvr::stereo::target_handoff::Draw(self);
             else cvr::stereo::target_handoff::Unknown(self,9);

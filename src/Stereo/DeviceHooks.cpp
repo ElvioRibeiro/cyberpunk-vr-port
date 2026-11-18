@@ -973,6 +973,8 @@ static void STDMETHODCALLTYPE RetainedResolveRegion(ID3D12GraphicsCommandList1* 
 static void STDMETHODCALLTYPE RetainedBeginRenderPass(ID3D12GraphicsCommandList4* list,UINT count,
     const D3D12_RENDER_PASS_RENDER_TARGET_DESC* targets,const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC* depth,D3D12_RENDER_PASS_FLAGS flags){
     const auto* entry=command_list_hook_entry(list);if(!entry || !entry->begin_render_pass_original)return;
+    // Render-pass attachments are not classified by the VRS MVP; withdraw its override.
+    cvr::vrs::Restore(list);cvr::vrs::Invalidate(list);
     cvr::stereo::retained_geometry::RenderPass(list,true);
     cvr::stereo::target_handoff::Unknown(list,8);
     cvr::stereo::target_access::Unknown(list,8);

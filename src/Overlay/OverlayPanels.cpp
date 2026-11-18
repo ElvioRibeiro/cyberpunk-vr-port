@@ -1022,7 +1022,7 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
                 UI::PushID("fixedVrs");
                 auto& v=state.vrs;
                 changed|=widgets::Combo("Peripheral shading",&v.mode,"Off\0 2 x 2\0 4 x 4\0");
-                if(UI::IsItemHovered())UI::SetTooltip("Opaque scene materials in both eyes. The center stays 1 x 1. Unsupported 4 x 4 falls back to 2 x 2.");
+                if(UI::IsItemHovered())UI::SetTooltip("Opaque scene materials in both eyes. The center stays 1 x 1. Engine stereo uses experimental 2 x 2 on recognized side-by-side targets. Unsupported 4 x 4 falls back to 2 x 2.");
                 UI::BeginDisabled(v.mode==0);
                 changed|=widgets::SliderFloat("Center width",&v.width,20,100,"%.1f %%");
                 changed|=widgets::SliderFloat("Center height",&v.height,20,100,"%.1f %%");
@@ -1035,8 +1035,12 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
                 if(v.mode) {
                     if(s.failed)UI::TextDisabled("Unavailable: GPU resource error");
                     else if(s.checked && !s.supported)UI::TextDisabled("VRS Tier 2 unavailable");
-                    else if(!s.readyMaps)UI::TextDisabled("Preparing");
-                    else UI::TextDisabled("%s | %u px tiles",v.mode==2 && s.additionalRates?"4 x 4":"2 x 2",s.tileSize);
+                    else if(!s.readyMaps)UI::TextDisabled("Requested: waiting for eligible scene layout");
+                    else {
+                        UI::TextDisabled("Map ready: %s | %u px tiles",s.appliedMode==2 && s.additionalRates?"4 x 4":"2 x 2",s.tileSize);
+                        UI::TextDisabled("Applied draws L/R: %llu / %llu",s.draws[0],s.draws[1]);
+                        if(s.stereo && v.mode==2)UI::TextDisabled("Stereo peripheral rate limited to 2 x 2");
+                    }
                 }
                 UI::PopID();
             }

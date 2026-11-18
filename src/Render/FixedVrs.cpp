@@ -20,17 +20,24 @@ using Microsoft::WRL::ComPtr;
 std::atomic<bool> enabled{};
 namespace {
 constexpr GUID pipelineKey{0x5a4ac73c,0x80da,0x4983,{0xb5,0x12,0x1f,0x54,0xa9,0xa0,0xbe,0x47}};
+// Content identity excludes frame/target pointers so equivalent layouts reuse immutable maps.
+struct Layout {
+    unsigned width{},height{};
+    bool stereo{};
+    bool operator==(const Layout&) const = default;
+};
 struct Map;
 struct State {
     bool known{},eligible{},depth{};
-    UINT targets{},expectedTargets{},width{},height{};
+    UINT targets{},expectedTargets{},width{},height{},targetWidth{},targetHeight{};
+    D3D12_VIEWPORT viewport{};
     D3D12_SHADING_RATE rate=D3D12_SHADING_RATE_1X1;
     std::array<D3D12_SHADING_RATE_COMBINER,2> combiners{D3D12_SHADING_RATE_COMBINER_PASSTHROUGH,D3D12_SHADING_RATE_COMBINER_PASSTHROUGH};
     ID3D12Resource* image{};
     ID3D12Resource* retained{};
     ID3D12PipelineState* pipeline{};
     uint64_t revision{},recordingEpoch{};
-    unsigned mapWidth{},mapHeight{};
+    Layout mapLayout;
     std::shared_ptr<Map> selected;
     ID3D12Resource* overrideImage{};
     RateFn rateFn{};
@@ -38,7 +45,7 @@ struct State {
 };
 struct Map {
     Settings settings;
-    unsigned width{},height{};
+    Layout layout;
     ComPtr<ID3D12Resource> image,upload;
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> list;
@@ -59,7 +66,7 @@ ComPtr<ID3D12Device> device;
 ComPtr<ID3D12Fence> fence;
 std::unordered_map<ID3D12GraphicsCommandList*,State> states;
 std::vector<std::shared_ptr<Map>> maps;
-std::vector<std::pair<unsigned,unsigned>> requests;
+std::vector<Layout> requests;
 
 State* FindState(ID3D12GraphicsCommandList* list,bool create=false) {
     // Recording one command list is externally serialized by D3D12's contract.
@@ -87,11 +94,12 @@ void SetPipeline(State& s,ID3D12PipelineState* pso) {
     s.eligible=pso && SUCCEEDED(pso->GetPrivateData(pipelineKey,&size,&count)) && size==sizeof(count) && count>=3 && count<=4;
     s.expectedTargets=s.eligible?count:0;
 }
+// Upload each immutable map once; existing command-resource leases cover every submission.
 bool CreateMap(Map& map,ID3D12CommandQueue* queue) {
-    const auto bytes=BuildRates(map.settings,map.width,map.height,status.tileSize,status.additionalRates);
+    const auto bytes=BuildRates(map.settings,map.layout.width,map.layout.height,status.tileSize,status.additionalRates,map.layout.stereo);
     if(bytes.empty())return false;
     D3D12_RESOURCE_DESC d{};d.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    d.Width=(map.width+status.tileSize-1)/status.tileSize;d.Height=(map.height+status.tileSize-1)/status.tileSize;
+    d.Width=(map.layout.width+status.tileSize-1)/status.tileSize;d.Height=(map.layout.height+status.tileSize-1)/status.tileSize;
     d.DepthOrArraySize=1;d.MipLevels=1;d.SampleDesc.Count=1;d.Format=DXGI_FORMAT_R8_UINT;
     D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
     if(FAILED(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&map.image))))return false;
@@ -119,11 +127,11 @@ bool CreateMap(Map& map,ID3D12CommandQueue* queue) {
 }
 }
 Settings GetSettings(){std::lock_guard lock(mutex);return requested;}
+// Preserve the requested mode; stereo clamps only the effective peripheral rate to 2x2.
 void SetSettings(Settings s) {
     s=Normalize(s);std::lock_guard lock(mutex);
-    // The rate map is laid out for one eye per target; engine stereo has both in one. The setting itself is
-    // kept, so it is back when the mode is.
-    const bool on=s.mode!=0 && !engine_stereo::Enabled();
+    // Stereo eligibility is decided per draw from the actual MRT and viewport layout.
+    const bool on=s.mode!=0;
     if(enabled.load(std::memory_order_relaxed)!=on)recordingEpoch.fetch_add(1,std::memory_order_release);
     enabled.store(on,std::memory_order_relaxed);
     if(on)everEnabled.store(true,std::memory_order_relaxed);
@@ -131,7 +139,16 @@ void SetSettings(Settings s) {
     requested=s;applyAfter=GetTickCount64()+1000;
     if(!s.mode){applied=s;revision.fetch_add(1,std::memory_order_release);}
 }
-Status GetStatus(){std::lock_guard lock(mutex);auto value=status;for(int i=0;i<2;++i){value.draws[i]=draws[i].load();value.sceneDraws[i]=sceneDraws[i].load();value.eligibleDraws[i]=eligibleDraws[i].load();}return value;}
+// Report the requested policy separately from the rate actually applied by this launch.
+Status GetStatus(){
+    std::lock_guard lock(mutex);
+    auto value=status;
+    value.requestedMode=requested.mode;value.appliedMode=applied.mode;value.stereo=engine_stereo::Enabled();
+    for(int i=0;i<2;++i){
+        value.draws[i]=draws[i].load();value.sceneDraws[i]=sceneDraws[i].load();value.eligibleDraws[i]=eligibleDraws[i].load();
+    }
+    return value;
+}
 void GraphicsCreated(ID3D12PipelineState* pso,const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) {
     if(!pso || stereo::probe::internalCommands)return;
     const UINT count=EligiblePipeline(d)?d.NumRenderTargets:0;pso->SetPrivateData(pipelineKey,sizeof(count),&count);
@@ -152,32 +169,45 @@ void Reset(ID3D12GraphicsCommandList* list,bool known,ID3D12PipelineState* pso) 
 }
 void Invalidate(ID3D12GraphicsCommandList* list){if(stereo::probe::internalCommands || !everEnabled.load(std::memory_order_relaxed))return;if(auto* s=FindState(list))*s={};}
 void Pipeline(ID3D12GraphicsCommandList* list,ID3D12PipelineState* pso){Edit(list,[&](State& s){SetPipeline(s,pso);});}
+// Keep the complete viewport; the right eye is offset in target coordinates.
 void Viewports(ID3D12GraphicsCommandList* list,UINT n,const D3D12_VIEWPORT* v){Edit(list,[&](State& s){
-    s.width=s.height=0;
+    s.width=s.height=0;s.viewport={};
+    if(n==1 && v)s.viewport=*v;
     if(n!=1 || !v || v->TopLeftX!=0 || v->TopLeftY!=0 || !(v->Width>=64 && v->Width<=16384 && v->Height>=64 && v->Height<=16384) ||
        float(UINT(v->Width))!=v->Width || float(UINT(v->Height))!=v->Height)return;
     s.width=UINT(v->Width);s.height=UINT(v->Height);
 });}
-void Targets(ID3D12GraphicsCommandList* list,UINT count,bool depth){Edit(list,[&](State& s){s.targets=count;s.depth=depth;});}
+// Extents are published only when all RTVs have the supported subresource/layout.
+void Targets(ID3D12GraphicsCommandList* list,UINT count,bool depth,unsigned width,unsigned height){
+    Edit(list,[&](State& s){s.targets=count;s.depth=depth;s.targetWidth=width;s.targetHeight=height;});
+}
 void ShadingRate(ID3D12GraphicsCommandList* list,D3D12_SHADING_RATE rate,const D3D12_SHADING_RATE_COMBINER* c){Edit(list,[&](State& s){
     s.rate=rate;s.combiners=c?std::array{c[0],c[1]}:std::array{D3D12_SHADING_RATE_COMBINER_PASSTHROUGH,D3D12_SHADING_RATE_COMBINER_PASSTHROUGH};
 });}
 void ShadingImage(ID3D12GraphicsCommandList* list,ID3D12Resource* image){Edit(list,[&](State& s){s.image=image;});}
 
+// MAIN identifies the view, not a stereo eye: derive physical L/R from verified target rectangles.
 void PrepareDraw(ID3D12GraphicsCommandList* base,uint32_t node,int eye,RateFn setRate,ImageFn setImage) {
     if(stereo::probe::internalCommands || !everEnabled.load(std::memory_order_relaxed))return;
     auto* state=FindState(base);if(!state || !state->known)return;auto& s=*state;
     if(!enabled.load(std::memory_order_relaxed) || s.recordingEpoch!=recordingEpoch.load(std::memory_order_acquire) || node!=0x33DDA4 || eye<0 || eye>1 || !setRate || !setImage){RestoreState(base,s);return;}
+    const bool stereo=engine_stereo::Enabled();
+    Layout layout{s.width,s.height,false};
+    if(stereo){
+        eye=eye==0 && engine_stereo::Rendering()?StereoViewportEye(s.targetWidth,s.targetHeight,s.viewport):-1;
+        if(eye<0){RestoreState(base,s);return;}
+        layout={s.targetWidth,s.targetHeight,true};
+    }
     sceneDraws[eye].fetch_add(1,std::memory_order_relaxed);
-    if(!s.eligible || !s.depth || s.targets!=s.expectedTargets || !s.width || !s.height){RestoreState(base,s);return;}
+    if(!s.eligible || !s.depth || s.targets!=s.expectedTargets || !layout.width || !layout.height){RestoreState(base,s);return;}
     eligibleDraws[eye].fetch_add(1,std::memory_order_relaxed);
     const auto version=revision.load(std::memory_order_acquire);
-    if(s.revision!=version || s.mapWidth!=s.width || s.mapHeight!=s.height) {
-        std::lock_guard lock(mutex);s.selected.reset();s.revision=version;s.mapWidth=s.width;s.mapHeight=s.height;
+    if(s.revision!=version || s.mapLayout!=layout) {
+        std::lock_guard lock(mutex);s.selected.reset();s.revision=version;s.mapLayout=layout;
         if(applied.mode && status.supported && !status.failed) {
-            const auto found=std::find_if(maps.begin(),maps.end(),[&](const auto& m){return m->settings==applied && m->width==s.width && m->height==s.height;});
+            const auto found=std::find_if(maps.begin(),maps.end(),[&](const auto& m){return m->settings==applied && m->layout==layout;});
             if(found!=maps.end()){if((*found)->ready){s.selected=*found;s.selected->lastUsed=++useSerial;}}
-            else {const auto size=std::pair{s.width,s.height};if(requests.size()<8 && std::find(requests.begin(),requests.end(),size)==requests.end())requests.push_back(size);}
+            else if(requests.size()<8 && std::find(requests.begin(),requests.end(),layout)==requests.end())requests.push_back(layout);
         }
     }
     if(!s.selected){RestoreState(base,s);return;}
@@ -194,6 +224,7 @@ void PrepareDraw(ID3D12GraphicsCommandList* base,uint32_t node,int eye,RateFn se
     setImage(list,map.image.Get());setRate(list,D3D12_SHADING_RATE_1X1,combine);
 }
 void Restore(ID3D12GraphicsCommandList* list){if(stereo::probe::internalCommands || !everEnabled.load(std::memory_order_relaxed))return;if(auto* s=FindState(list))RestoreState(list,*s);}
+// Build/poll maps outside draw recording. No uploads or waits occur in PrepareDraw.
 void Tick(ID3D12Device* current,ID3D12CommandQueue* queue) {
     if(!current || !queue)return;
     stereo::probe::Scope internal;
@@ -202,8 +233,8 @@ void Tick(ID3D12Device* current,ID3D12CommandQueue* queue) {
     if(now-lastReport>=250) {
         lastReport=now;InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_FixedVrsReportSeq));
         std::snprintf(CyberpunkVR_FixedVrsReport,sizeof(CyberpunkVR_FixedVrsReport),
-            "{\"requested\":%d,\"applied\":%d,\"checked\":%d,\"supported\":%d,\"additional\":%d,\"failed\":%d,\"tile\":%u,\"maps\":%u,\"draws\":[%llu,%llu],\"scene\":[%llu,%llu],\"eligible\":[%llu,%llu]}",
-            requested.mode,applied.mode,int(status.checked),int(status.supported),int(status.additionalRates),int(status.failed),status.tileSize,status.readyMaps,
+            "{\"requested\":%d,\"applied\":%d,\"stereo\":%d,\"checked\":%d,\"supported\":%d,\"additional\":%d,\"failed\":%d,\"tile\":%u,\"maps\":%u,\"draws\":[%llu,%llu],\"scene\":[%llu,%llu],\"eligible\":[%llu,%llu]}",
+            requested.mode,applied.mode,int(engine_stereo::Enabled()),int(status.checked),int(status.supported),int(status.additionalRates),int(status.failed),status.tileSize,status.readyMaps,
             draws[0].load(),draws[1].load(),sceneDraws[0].load(),sceneDraws[1].load(),eligibleDraws[0].load(),eligibleDraws[1].load());
         InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_FixedVrsReportSeq));
     }
@@ -218,7 +249,9 @@ void Tick(ID3D12Device* current,ID3D12CommandQueue* queue) {
         revision.fetch_add(1,std::memory_order_release);
     }
     if(!status.supported || status.failed)return;
-    if(GetTickCount64()>=applyAfter && !(applied==requested)) {applied=requested;requests.clear();revision.fetch_add(1,std::memory_order_release);}
+    Settings desired=requested;
+    if(engine_stereo::Enabled() && desired.mode==2)desired.mode=1;
+    if(GetTickCount64()>=applyAfter && !(applied==desired)) {applied=desired;requests.clear();revision.fetch_add(1,std::memory_order_release);}
     const auto done=fence->GetCompletedValue();if(done==UINT64_MAX){status.failed=true;return;}
     status.readyMaps=0;
     for(auto& map:maps)if(map->completion && map->completion<=done) {
@@ -229,14 +262,14 @@ void Tick(ID3D12Device* current,ID3D12CommandQueue* queue) {
     std::erase_if(maps,[&](const auto& m){return m->ready && !(m->settings==applied);});
     if(!applied.mode)return;
     auto pending=std::move(requests);requests.clear();
-    for(auto [w,h]:pending) {
-        if(std::any_of(maps.begin(),maps.end(),[&](const auto& m){return m->width==w && m->height==h && m->settings==applied;}))continue;
+    for(auto layout:pending) {
+        if(std::any_of(maps.begin(),maps.end(),[&](const auto& m){return m->layout==layout && m->settings==applied;}))continue;
         if(maps.size()>=16) {
             auto victim=maps.end();for(auto it=maps.begin();it!=maps.end();++it)if((*it)->ready && (victim==maps.end() || (*it)->lastUsed<(*victim)->lastUsed))victim=it;
             if(victim==maps.end())break;
             maps.erase(victim); // Recorded lists/submissions retain any in-flight image.
         }
-        auto map=std::make_shared<Map>();map->settings=applied;map->width=w;map->height=h;maps.push_back(map);
+        auto map=std::make_shared<Map>();map->settings=applied;map->layout=layout;maps.push_back(map);
         if(!CreateMap(*map,queue)){status.failed=true;break;}
     }
 }

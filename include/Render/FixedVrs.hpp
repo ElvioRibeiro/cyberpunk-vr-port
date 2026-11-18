@@ -15,6 +15,8 @@ struct Settings {
 struct Status {
     bool checked{},supported{},additionalRates{},failed{};
     unsigned tileSize{},readyMaps{};
+    int requestedMode{},appliedMode{};
+    bool stereo{};
     uint64_t draws[2]{};
     uint64_t sceneDraws[2]{},eligibleDraws[2]{};
 };
@@ -23,7 +25,13 @@ Settings GetSettings();
 void SetSettings(Settings);
 bool ParseSetting(const char*,Settings&);
 void WriteSettings(FILE*,Settings);
-std::vector<uint8_t> BuildRates(Settings,unsigned width,unsigned height,unsigned tileSize,bool additionalRates);
+std::vector<uint8_t> BuildRates(Settings,unsigned width,unsigned height,unsigned tileSize,bool additionalRates,bool stereo=false);
+// Returns the physical eye only for a complete, integral half of a side-by-side target.
+int StereoViewportEye(unsigned targetWidth,unsigned targetHeight,const D3D12_VIEWPORT&);
+// Only plain 2D mip-zero single-sample RTVs are supported by the stereo MVP.
+bool StereoTargetCompatible(const D3D12_RESOURCE_DESC&,const D3D12_RENDER_TARGET_VIEW_DESC*);
+// Copied RTVs remain native until observed again through CreateRenderTargetView.
+void RtvDescriptorsOverwritten(ID3D12Device*,UINT,const D3D12_CPU_DESCRIPTOR_HANDLE*,const UINT*);
 bool EligiblePipeline(const D3D12_GRAPHICS_PIPELINE_STATE_DESC&);
 Status GetStatus();
 extern std::atomic<bool> enabled;
@@ -34,7 +42,7 @@ void Reset(ID3D12GraphicsCommandList*,bool rateKnown,ID3D12PipelineState*);
 void Invalidate(ID3D12GraphicsCommandList*);
 void Pipeline(ID3D12GraphicsCommandList*,ID3D12PipelineState*);
 void Viewports(ID3D12GraphicsCommandList*,UINT,const D3D12_VIEWPORT*);
-void Targets(ID3D12GraphicsCommandList*,UINT,bool depth);
+void Targets(ID3D12GraphicsCommandList*,UINT,bool depth,unsigned targetWidth=0,unsigned targetHeight=0);
 void ShadingRate(ID3D12GraphicsCommandList*,D3D12_SHADING_RATE,const D3D12_SHADING_RATE_COMBINER*);
 void ShadingImage(ID3D12GraphicsCommandList*,ID3D12Resource*);
 void Tick(ID3D12Device*,ID3D12CommandQueue*);

@@ -12,9 +12,9 @@
 //     own lens window when the engine builds it (Stereo/AsymProjection.cpp, src/Stereo/EngineStereo.cpp);
 //   * VRCAM is never requested (Stereo/VrcamConfig.hpp);
 //   * the presented backbuffer is split: each half goes to its eye's swapchain (Runtimes/OpenXRCapture.cpp);
-//   * port features drawn for one eye per target (hidden-area mask, fixed VRS, wide merge) are off; DLSS, foveated
+//   * port features drawn for one eye per target (hidden-area mask, wide merge) are off; DLSS, foveated
 //     DLSS and framegen's inputs go per eye (Stereo/EngineStereoDlss.cpp, Render/FoveatedDlss.cpp,
-//     Framegen/Inputs.cpp).
+//     Framegen/Inputs.cpp). Fixed VRS recognizes supported side-by-side scene targets (Render/FixedVrs.cpp).
 //
 // The engine renders the frame when its Odyssey 3D SDK answers "available" and the [Odyssey3D] cvars ask for
 // stereo. Both are the plugin's (src/Stereo/EngineStereoSdk.cpp): no Samsung SDK, registry key or cvar ini. Stereo

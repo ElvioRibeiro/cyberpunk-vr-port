@@ -23,21 +23,40 @@ void WriteSettings(FILE* file,Settings s) {
     std::fprintf(file,"xr_vrs=%d\nxr_vrs_width=%.2f\nxr_vrs_height=%.2f\nxr_vrs_offset_x=%.2f\nxr_vrs_offset_y=%.2f\n",
         s.mode,s.width,s.height,s.offsetX,s.offsetY);
 }
-std::vector<uint8_t> BuildRates(Settings s,unsigned w,unsigned h,unsigned tile,bool additional) {
-    if(!w || !h || w>16384 || h>16384 || tile<8 || tile>32 || (tile&(tile-1)))return {};
+// Build target-aligned immutable rates; stereo has two geometric centers and at most 2x2.
+std::vector<uint8_t> BuildRates(Settings s,unsigned w,unsigned h,unsigned tile,bool additional,bool stereo) {
+    if((stereo && (w%2 || w<128)) || !w || !h || w>16384 || h>16384 || tile<8 || tile>32 || (tile&(tile-1)))return {};
     s=Normalize(s);const unsigned columns=(w+tile-1)/tile,rows=(h+tile-1)/tile;
     std::vector<uint8_t> result(size_t(columns)*rows,D3D12_SHADING_RATE_1X1);
     if(!s.mode)return result;
-    const float left=w*(.5f+(s.offsetX-s.width*.5f)/100),right=left+w*s.width/100;
+    const unsigned eyeWidth=stereo?w/2:w;
+    const float left=eyeWidth*(.5f+(s.offsetX-s.width*.5f)/100),right=left+eyeWidth*s.width/100;
     const float top=h*(.5f+(s.offsetY-s.height*.5f)/100),bottom=top+h*s.height/100;
-    // Every tile intersecting the center is fine. A coarse tile never straddles it.
+    // Index tiles globally: concatenating per-eye maps misaligns a non-tile-aligned seam.
+    // Tiles intersecting either protected center or straddling the seam remain 1x1.
     for(unsigned y=0;y<rows;++y)for(unsigned x=0;x<columns;++x) {
         const float x0=float(x*tile),y0=float(y*tile),x1=float(std::min(w,(x+1)*tile)),y1=float(std::min(h,(y+1)*tile));
-        const auto intersects=[&](float marginX,float marginY){return x1>left-marginX && x0<right+marginX && y1>top-marginY && y0<bottom+marginY;};
+        if(stereo && x0<eyeWidth && x1>eyeWidth)continue;
+        const float origin=stereo && x0>=eyeWidth?float(eyeWidth):0.f;
+        const auto intersects=[&](float marginX,float marginY){return x1>origin+left-marginX && x0<origin+right+marginX && y1>top-marginY && y0<bottom+marginY;};
         if(intersects(0,0))continue;
-        result[size_t(y)*columns+x]=uint8_t(s.mode==2 && additional && !intersects(w*.08f,h*.08f)?D3D12_SHADING_RATE_4X4:D3D12_SHADING_RATE_2X2);
+        result[size_t(y)*columns+x]=uint8_t(!stereo && s.mode==2 && additional && !intersects(eyeWidth*.08f,h*.08f)?D3D12_SHADING_RATE_4X4:D3D12_SHADING_RATE_2X2);
     }
     return result;
+}
+// Reject ambiguous layouts instead of deriving an eye from MAIN/VRCAM identity.
+int StereoViewportEye(unsigned w,unsigned h,const D3D12_VIEWPORT& v) {
+    if(w<128 || w>16384 || w%2 || h<64 || h>16384 ||
+       v.Width!=float(w/2) || v.Height!=float(h) || v.TopLeftY!=0 ||
+       v.MinDepth!=0 || v.MaxDepth!=1)return -1;
+    if(v.TopLeftX==0)return 0;
+    return v.TopLeftX==float(w/2)?1:-1;
+}
+// Descriptor metadata is checked at creation and all MRT extents at binding.
+bool StereoTargetCompatible(const D3D12_RESOURCE_DESC& d,const D3D12_RENDER_TARGET_VIEW_DESC* v) {
+    return d.Dimension==D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.DepthOrArraySize==1 &&
+        d.SampleDesc.Count==1 && !d.SampleDesc.Quality &&
+        (!v || (v->ViewDimension==D3D12_RTV_DIMENSION_TEXTURE2D && !v->Texture2D.MipSlice && !v->Texture2D.PlaneSlice));
 }
 bool EligiblePipeline(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) {
     if(d.NumRenderTargets<3 || d.NumRenderTargets>4 || !d.PS.BytecodeLength || !d.VS.BytecodeLength ||

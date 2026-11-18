@@ -1,3 +1,4 @@
+#include "Render/FixedVrs.hpp"
 #include "Render/StageReplay.hpp"
 #include "Render/GpuQueueTimeline.hpp"
 #include "Utils/DebugGate.hpp"
@@ -419,6 +420,7 @@ static void STDMETHODCALLTYPE HookedCopyDescriptors(ID3D12Device* device,UINT n,
         cvr::cascades::CopyDescriptors(device,n,dest,sizes,m,source,counts,type);
         cvr::hidden_area::CopyDescriptors(device,n,dest,sizes,m,source,counts,type);
     }
+    if(type==D3D12_DESCRIPTOR_HEAP_TYPE_RTV)cvr::vrs::RtvDescriptorsOverwritten(device,n,dest,sizes);
     cvr::stereo::descriptors::Copy(device,n,dest,sizes,m,source,counts,type);
     cvr::stereo::stage_replay::Copy(device,n,dest,sizes,m,source,counts,type);
 }
@@ -431,6 +433,7 @@ static void STDMETHODCALLTYPE HookedCopyDescriptorsSimple(ID3D12Device* device,U
         cvr::cascades::CopyDescriptors(device,1,&dest,&n,1,&source,&n,type);
         cvr::hidden_area::CopyDescriptors(device,1,&dest,&n,1,&source,&n,type);
     }
+    if(type==D3D12_DESCRIPTOR_HEAP_TYPE_RTV)cvr::vrs::RtvDescriptorsOverwritten(device,1,&dest,&n);
     cvr::stereo::descriptors::Copy(device,1,&dest,&n,1,&source,&n,type);
     cvr::stereo::stage_replay::Copy(device,1,&dest,&n,1,&source,&n,type);
 }
