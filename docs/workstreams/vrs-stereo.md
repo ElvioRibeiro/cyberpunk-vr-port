@@ -19,7 +19,9 @@ Standalone Release x64 CPU and hardware-GPU tests passed (2/2). GPU regression u
 
 Synthetic stereo PS invocations: 99,840 baseline versus 65,664 with VRS. This is shader-work evidence from the fixture, not frame time or a game FPS prediction. The local D3D12 debug layer was unavailable. The GPU test returns CTest skip code 77 on hardware without Tier 2 instead of reporting a pass.
 
-Full plugin build, game-pass coverage/profile, D3D12 debug validation and headset quality/benefit must be recorded separately. Keep this feature experimental until those checks pass. The existing pipeline classifier does not prove that every real shader's alpha testing, motion vectors, derivatives or side effects are suitable.
+Full plugin Release x64 build linked successfully from implementation commit `3a6b7528`. DLL SHA256: `accc2d8864252f0b844656c55d73f474fb5579248d3ecc767ee209cdca4fc429`. Build used the game-2.5 RED4ext SDK override `5246e659d783e5834cc08a90e56c8932c9ed3449` and a local guard for the absent optional `tools/rtti_dump`; that build workaround is excluded from this branch. The SDK gitlink is unchanged. The test artifact contains neither OSR reset nor F10 fixes.
+
+Game-pass coverage/profile, D3D12 debug validation and headset quality/benefit remain pending. Keep this feature experimental until those checks pass. The existing pipeline classifier does not prove that every real shader's alpha testing, motion vectors, derivatives or side effects are suitable.
 
 ## In-game validation
 
