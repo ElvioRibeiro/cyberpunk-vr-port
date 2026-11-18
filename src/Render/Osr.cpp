@@ -316,6 +316,8 @@ struct Constants {
 static_assert(sizeof(Constants) <= 512, "one constant block");
 
 constexpr uint32_t kSlots = 3, kDescriptors = 12;
+// Lifecycle/input threads can request a reset without racing the capture-owned GPU state.
+std::atomic<bool> g_pendingHistoryReset{false};
 
 struct State {
     ID3D12Device* device = nullptr;
@@ -330,6 +332,9 @@ struct State {
     Tex histColor[2], histDepth[2];
     Camera histCamera[2];
     bool histValid[2]{};
+    uint32_t historyFrameId = 0;
+    uint32_t historyEye = 0;
+    bool historyFrameKnown = false;
     Tex stereoT, histT, resColor, resDepth, final, nearD;
     Stats stats;
 } g;
@@ -506,7 +511,14 @@ float DepthB(const Camera& c) {
 
 }  // namespace
 
-void Reset() { g.histValid[0] = g.histValid[1] = false; }
+// Invalidate content, not allocations. The capture thread owns these flags and subsequent GPU recording.
+void Reset() {
+    g.histValid[0] = g.histValid[1] = false;
+    g.historyFrameKnown = false;
+}
+
+// Coalesce requests; a request arriving after Record's exchange stays pending for the next capture.
+void InvalidateHistory() { g_pendingHistoryReset.store(true, std::memory_order_release); }
 
 Stats Statistics() { return g.stats; }
 
@@ -524,6 +536,12 @@ bool Record(const Request& q) {
     const uint32_t w = uint32_t(dd.Width), h = dd.Height, W = uint32_t(od.Width), H = od.Height;
     if (uint32_t(cd.Width) < W || cd.Height < H) return fail("drawn smaller than the eye");
     if (!EnsureSizes(w, h, W, H)) return fail("textures");
+    // The engine reset is level-triggered: every marked capture must reject pre-reset history.
+    // Copying this frame below starts fresh history normally; no extra capture, allocation or wait is needed.
+    const bool pendingReset = g_pendingHistoryReset.exchange(false, std::memory_order_acq_rel);
+    const bool consecutive = q.hasRenderFrameId && g.historyFrameKnown &&
+        uint32_t(q.renderFrameId - g.historyFrameId) == 1u && q.eye == (g.historyEye ^ 1u);
+    if (q.resetHistory || pendingReset || !consecutive) Reset();
     auto* list = q.list;
     const uint32_t n = q.eye, o = n ^ 1u;
     // the drawn eye and its depth into this eye's history: the source now, the made eye's history in the next frame
@@ -623,6 +641,9 @@ bool Record(const Request& q) {
 
     g.histCamera[n] = q.source;
     g.histValid[n] = true;
+    g.historyFrameId = q.renderFrameId;
+    g.historyEye = q.eye;
+    g.historyFrameKnown = q.hasRenderFrameId;
     ++g.stats.recorded;
     CyberpunkVR_OsrStats[0].fetch_add(1, std::memory_order_relaxed);
     if (history) CyberpunkVR_OsrStats[2].fetch_add(1, std::memory_order_relaxed);

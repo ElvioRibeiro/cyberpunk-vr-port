@@ -12,6 +12,7 @@
 #include "Runtimes/OpenXRManager.hpp"
 #include "Render/FoveatedDlss.hpp"
 #include "Render/FixedVrs.hpp"
+#include "Render/Osr.hpp"
 #include "Hooks/Psvr2Input.hpp"
 #include "Hooks/RoomscaleMove.hpp"
 #include "Camera/CameraLink.hpp"
@@ -1272,6 +1273,7 @@ bool OpenXRManager::BeginSession() {
         return false;
     }
 
+    cvr::osr::InvalidateHistory(); // A resumed XR session must not inherit the previous session's capture.
     m_sessionRunning.store(true, std::memory_order_relaxed);
     NotifySubmitThread();   // in case threaded submit was wanted before the session started
     Log("OpenXRManager: Session begun.\n");
@@ -1280,6 +1282,7 @@ bool OpenXRManager::BeginSession() {
 
 void OpenXRManager::EndSession() {
     if (m_session == XR_NULL_HANDLE || !m_sessionRunning.load(std::memory_order_relaxed)) return;
+    cvr::osr::InvalidateHistory();
     xrEndSession(m_session);
     m_sessionRunning.store(false, std::memory_order_relaxed);
     Log("OpenXRManager: Session ended.\n");
@@ -2488,6 +2491,8 @@ void OpenXRManager::FlushHandsToShared(const OpenXRHeadPose* frameHead, XrTime f
 
 
 void OpenXRManager::Shutdown() {
+    // Preserve no OSR history across XR sessions; the recording thread consumes this request safely.
+    cvr::osr::InvalidateHistory();
     cvr::haptics::StopVehicleAudioCapture();
     cvr::haptics::Clear();
     cvr::foveated::Shutdown();

@@ -237,7 +237,11 @@ M4 ViewToClip(const XrFovf& fov, const cvr::framegen::CameraData& c) {
 
 }  // namespace
 
-void SetLaunch(bool on) { g_launch = on; }
+// Mode/lifecycle callers request invalidation; they never mutate capture-owned history directly.
+void SetLaunch(bool on) {
+    if (g_launch != on) cvr::osr::InvalidateHistory();
+    g_launch = on;
+}
 bool Launch() { return g_launch; }
 // Without the plugin the port's own reconstruction makes the other eye: the launch takes turns either way.
 bool Active() { return g_launch; }
@@ -261,10 +265,15 @@ int FrameEye() {
 Stats Statistics() { return g.stats; }
 
 void SetMode(int mode) {
-    if (mode != 0) CyberpunkVR_AfwTune[6] = mode == kModeOsr ? 1 : 0;
+    if (mode != 0) {
+        const int reconstruction = mode == kModeOsr ? 1 : 0;
+        if (CyberpunkVR_AfwTune[6] != reconstruction) cvr::osr::InvalidateHistory();
+        CyberpunkVR_AfwTune[6] = reconstruction;
+    }
 }
 
 void Fallback(const char* why) {
+    if (g_launch) cvr::osr::InvalidateHistory();
     ++g.stats.fallbacks;
     // Logged when the reason changes and then at powers of two of its run, so a steady fallback does not fill the log.
     static uint64_t s_run = 0;
@@ -301,6 +310,9 @@ bool Warp(const WarpRequest& q) {
         r.eye = n;
         r.out = q.out;
         r.history = CyberpunkVR_AfwTune[0] != 1;   // "alternate eye" mode: the stereo warp alone
+        r.resetHistory = cam.reset;
+        r.renderFrameId = in.frameId;
+        r.hasRenderFrameId = true;
         r.debug = CyberpunkVR_AfwTune[3] ? 1u : 0u;
         r.jitterSign = CyberpunkVR_AfwTune[7] == 1 ? 1.0f : CyberpunkVR_AfwTune[7] == 2 ? 0.0f : -1.0f;
         for (cvr::osr::Camera* c : {&r.source, &r.dest}) {
