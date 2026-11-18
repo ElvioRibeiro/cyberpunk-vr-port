@@ -267,3 +267,6 @@ mods/archive/cyberpunkvrport.archive
 # Haptics regression fixtures; generated output stays local.
 !tools/psvr2_input_tests/stubs/
 /build-haptics-tests/
+
+# Standalone read-only performance diagnostics.
+!tools/performance_watch/
