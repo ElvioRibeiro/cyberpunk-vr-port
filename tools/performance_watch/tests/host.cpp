@@ -9,5 +9,6 @@ int main(int argc,char** argv){
         if(!seq)return 3;InterlockedExchange(seq,1);Sleep(10000);return 0;
     }
     if(argc>1 && std::strcmp(argv[1],"stale")==0){tick(5);Sleep(10000);return 0;}
-    for(int i=0;i<150;++i){tick(i);Sleep(200);}return 0;
+    auto profileTick=reinterpret_cast<void(*)()>(GetProcAddress(module,"profileTick"));
+    for(int i=0;i<150;++i){tick(i);if(profileTick)profileTick();Sleep(200);}return 0;
 }

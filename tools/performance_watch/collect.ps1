@@ -1,4 +1,4 @@
-# Read-only process/GPU sampling. Run on the game PC; share the output and the port's flight logs afterwards.
+# Process/GPU sampling; optional ETW capture and bounded internal-profiler requests run on the game PC.
 [CmdletBinding()]
 param(
     [string]$OutputDirectory,
@@ -7,6 +7,8 @@ param(
     [ValidateRange(1, 86400)][int]$DurationSeconds = 3600,
     [ValidateRange(250, 60000)][int]$IntervalMilliseconds = 1000,
     [ValidateRange(1, 60)][int]$GpuIntervalSeconds = 5,
+    [switch]$CaptureFrames,
+    [switch]$ProfileGpu,
     [switch]$NoGpu
 )
 
@@ -123,21 +125,32 @@ if (-not $OutputDirectory) {
     $OutputDirectory = if ($isGame) { Join-Path $GameRoot 'red4ext/plugins/cyberpunkvrport/log/performance-watch' }
         else { Join-Path ([IO.Path]::GetTempPath()) 'cpvr-performance-watch' }
 }
+$profileMutex=$null
+if ($ProfileGpu) {
+    $profileMutex=[Threading.Mutex]::new($false,('Local\CPVR-GpuProfile-'+$target.Id))
+    $owned=$false
+    try { $owned=$profileMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $owned=$true }
+    if (!$owned) { $profileMutex.Dispose();throw 'Another GPU profiling collector is already running for this game.' }
+}
 $sessionName = [DateTimeOffset]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '-p' + $target.Id + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6)
 $session = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) $sessionName
 [void][IO.Directory]::CreateDirectory($session)
 $encoding = [Text.UTF8Encoding]::new($false)
 $logicalProcessors = [Environment]::ProcessorCount
 $manifest = @{
-    schema = 1; collector_version = 3; collector = Get-FileIdentity $PSCommandPath
+    schema = 1; collector_version = 4; collector = Get-FileIdentity $PSCommandPath
     created_utc = [DateTimeOffset]::UtcNow.ToString('o'); host_name = [Environment]::MachineName
     process_id = $target.Id; process_name = $target.ProcessName; process_start_utc = $target.StartTime.ToUniversalTime().ToString('o')
     game_root = $GameRoot; interval_ms = $IntervalMilliseconds; gpu_interval_s = $GpuIntervalSeconds
     logical_processors = $logicalProcessors; qpc_frequency = [Diagnostics.Stopwatch]::Frequency
     vrs_reader = Get-FileIdentity (Join-Path $PSScriptRoot 'VrsReader.cs')
-    mode = 'read_only_process_sampling_and_vrs_exports'; gameplay_validated = $false
+    mode = $(if ($ProfileGpu) {'process_sampling_with_gpu_profile_requests'} else {'read_only_process_sampling_and_vrs_exports'}); gameplay_validated = $false
     semantics = 'CPU covers the whole process, not one module/thread. GPU metrics cover the whole adapter. No FPS or photon-latency estimate is inferred.'
 }
+$manifest.capture_frames_requested=[bool]$CaptureFrames
+$manifest.gpu_profiles_requested=[bool]$ProfileGpu
+$manifest.profiler_control_source=Get-FileIdentity (Join-Path $PSScriptRoot 'GpuProfile.ps1')
+$manifest.presentmon=Get-FileIdentity (Join-Path $PSScriptRoot 'PresentMon.exe')
 $flightDirectory = $null
 if ($GameRoot) {
     $plugin = Join-Path $GameRoot 'red4ext/plugins/cyberpunkvrport'
@@ -151,6 +164,10 @@ $manifest.gpu_tool = if ($gpuTool) { $gpuTool.Source } else { $null }
 [IO.File]::WriteAllText((Join-Path $session 'manifest.json'), ($manifest | ConvertTo-Json -Depth 8), $encoding)
 $writer = [IO.StreamWriter]::new((Join-Path $session 'process.jsonl'), $false, $encoding)
 $writer.AutoFlush = $true
+$presentMonProcess=$null
+$presentMonSession=$null
+$profileState=@{reader=$null;saved=$null;context=$null;config=@{};next=60.0;inflight=$false;disabled=$false;index=0}
+if ($ProfileGpu) { . (Join-Path $PSScriptRoot 'GpuProfile.ps1') }
 Write-Host ('Collecting PID ' + $target.Id + ' into ' + $session)
 Write-Host 'Leave the game settings unchanged for the first comparison. Ctrl+C stops collection.'
 $startTicks = [Diagnostics.Stopwatch]::GetTimestamp()
@@ -160,6 +177,24 @@ $lastGpuSeconds = -$GpuIntervalSeconds
 $samples = 0
 $reason = 'duration_completed'
 try {
+    if ($CaptureFrames) {
+        $presentMonPath=Join-Path $PSScriptRoot 'PresentMon.exe'
+        $pmCsv=Join-Path $session 'frames.csv'
+        try {
+            if (!(Test-Path -LiteralPath $presentMonPath)) { throw 'PresentMon.exe missing beside collect.ps1.' }
+            $expected='b2a706bc6ad475749e3b7e3409263aa1e6906d45bdcf993f6dbc0f660188f1af'
+            if ((Get-FileHash -LiteralPath $presentMonPath).Hash.ToLowerInvariant() -ne $expected) { throw 'PresentMon digest mismatch.' }
+            $presentMonSession='CPVR-'+$target.Id+'-'+[guid]::NewGuid().ToString('N')
+            $pmArgs=@('--process_id',[string]$target.Id,'--output_file',('"'+$pmCsv+'"'),'--qpc_time','--v2_metrics',
+                '--no_console_stats','--no_track_input','--session_name',$presentMonSession,
+                '--timed',[string]$DurationSeconds,'--terminate_after_timed','--terminate_on_proc_exit')
+            $presentMonProcess=Start-Process -FilePath $presentMonPath -ArgumentList $pmArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $session 'presentmon.stdout.log') -RedirectStandardError (Join-Path $session 'presentmon.stderr.log')
+            $writer.WriteLine((@{type='presentmon_started';utc=[DateTimeOffset]::UtcNow.ToString('o');process_id=$presentMonProcess.Id;sha256=$expected;version='2.6.0';csv='frames.csv';semantics='Game swapchain presentation, not headset scanout. Convert CPUStartQPC raw ticks using manifest qpc_frequency, then correlate with qpc_ms.'} | ConvertTo-Json -Compress))
+        } catch {
+            Write-Warning ('Frametimes unavailable: '+$_.Exception.Message)
+            $writer.WriteLine((@{type='presentmon_error';utc=[DateTimeOffset]::UtcNow.ToString('o');message=$_.Exception.Message} | ConvertTo-Json -Compress))
+        }
+    }
     while ($true) {
         $ticks = [Diagnostics.Stopwatch]::GetTimestamp()
         $elapsed = ($ticks - $startTicks) / [double][Diagnostics.Stopwatch]::Frequency
@@ -194,6 +229,12 @@ try {
             $writer.WriteLine((@{type='vrs_change';utc=$row.utc;qpc_ms=$row.qpc_ms;
                 requested=$row.vrs.report.requested;applied=$row.vrs.report.applied;stereo=$row.vrs.report.stereo} | ConvertTo-Json -Compress))
         }
+        if ($ProfileGpu) { Update-GpuProfile $profileState $row $session $writer }
+        if ($presentMonProcess -and $presentMonProcess.HasExited) {
+            $writer.WriteLine((@{type='presentmon_exit';utc=$row.utc;exit_code=$presentMonProcess.ExitCode} | ConvertTo-Json -Compress))
+            Write-Warning ('PresentMon exited with code '+$presentMonProcess.ExitCode+'. Check presentmon.stderr.log.')
+            $presentMonProcess.Dispose();$presentMonProcess=$null
+        }
         $lastTicks = $ticks; $lastCpuMs = $cpuMs
         if ($elapsed - $lastGpuSeconds -ge $GpuIntervalSeconds) {
             $row.gpu_utc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -225,7 +266,25 @@ try {
         $reason = 'interrupted'
     }
     $writer.WriteLine((@{ type = 'stop'; utc = [DateTimeOffset]::UtcNow.ToString('o'); samples = $samples; reason = $reason } | ConvertTo-Json -Compress))
+    if ($ProfileGpu) { try { Close-GpuProfile $profileState } catch { Write-Warning $_.Exception.Message } }
+    if ($presentMonProcess) {
+        # Only this capture's unique child is stopped; never stop someone else's ETW session.
+        if (!$presentMonProcess.HasExited) { [void]$presentMonProcess.WaitForExit(1500) }
+        if (!$presentMonProcess.HasExited) {
+            try {
+                $stopper=Start-Process -FilePath $presentMonPath -ArgumentList @('--session_name',$presentMonSession,'--terminate_existing_session') -WindowStyle Hidden -PassThru
+                if (!$stopper.WaitForExit(2000)) { $stopper.Kill() };$stopper.Dispose()
+                [void]$presentMonProcess.WaitForExit(2000)
+            } catch { Write-Warning $_.Exception.Message }
+            if (!$presentMonProcess.HasExited) { $presentMonProcess.Kill() }
+        }
+        $presentMonProcess.Dispose()
+    }
+    if ($flightDirectory -and (Test-Path -LiteralPath (Join-Path $flightDirectory 'cyberpunkvrport.log'))) {
+        try { Copy-Item -LiteralPath (Join-Path $flightDirectory 'cyberpunkvrport.log') -Destination (Join-Path $session 'cyberpunkvrport-end.log') } catch { Write-Warning $_.Exception.Message }
+    }
     if ($vrsCache.reader) { $vrsCache.reader.Dispose() }
+    if ($profileMutex) { $profileMutex.ReleaseMutex();$profileMutex.Dispose() }
     $writer.Dispose()
     $target.Dispose()
     Write-Host ('Collection saved: ' + $session)

@@ -3,8 +3,9 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Collections.Generic;
 
-// Reads the port's published report only. No injection, remote calls or process writes.
+// Reads published reports; opt-in writes are restricted to existing profiler controls. No injection or remote calls.
 public sealed class CpvrVrsReader : IDisposable
 {
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -13,15 +14,27 @@ public sealed class CpvrVrsReader : IDisposable
     static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] data, UIntPtr size, out UIntPtr read);
     [DllImport("kernel32.dll")]
     static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool WriteProcessMemory(IntPtr process, IntPtr address, byte[] data, UIntPtr size, out UIntPtr written);
+    readonly Dictionary<string,uint> exports = new Dictionary<string,uint>();
+    readonly bool profileControl;
+    static readonly HashSet<string> controls = new HashSet<string> {
+        "CyberpunkVR_SceneGpuRequest", "CyberpunkVR_SceneGpuFrameRequest", "CyberpunkVR_SceneGpuGroupMode",
+        "CyberpunkVR_SceneGpuNodeFilter", "CyberpunkVR_SceneGpuViewportDetail", "CyberpunkVR_SceneGpuPipelineStats",
+        "CyberpunkVR_SceneGpuDrawOcclusion" };
     IntPtr handle;
     long moduleBase;
     int moduleSize;
     uint sequenceRva, reportRva;
     public uint Sequence { get; private set; }
+    public uint ProfileSequence { get; private set; }
 
     // Resolve named exports from the loaded image, respecting ASLR and module bounds.
-    public CpvrVrsReader(int pid)
+    public CpvrVrsReader(int pid) : this(pid, false) { }
+    // Write access is opt-in and used only for the seven existing profiler control exports.
+    public CpvrVrsReader(int pid, bool enableProfileControl)
     {
+        profileControl = enableProfileControl;
         if (!Environment.Is64BitProcess) throw new InvalidOperationException("Use 64-bit PowerShell.");
         using (var process = Process.GetProcessById(pid))
         {
@@ -30,7 +43,7 @@ public sealed class CpvrVrsReader : IDisposable
                 { moduleBase = module.BaseAddress.ToInt64(); moduleSize = module.ModuleMemorySize; break; }
         }
         if (moduleBase == 0) throw new InvalidOperationException("VR port module not loaded yet.");
-        handle = OpenProcess(0x1010, false, pid); // VM_READ | QUERY_LIMITED_INFORMATION
+        handle = OpenProcess(enableProfileControl ? 0x1038u : 0x1010u, false, pid); // VM_READ | QUERY_LIMITED_INFORMATION
         if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
         try
         {
@@ -54,11 +67,14 @@ public sealed class CpvrVrsReader : IDisposable
                 int end = Array.IndexOf(nameBytes, (byte)0);
                 if (end < 0) continue;
                 string name = Encoding.ASCII.GetString(nameBytes, 0, end);
-                if (name != "CyberpunkVR_FixedVrsReportSeq" && name != "CyberpunkVR_FixedVrsReport") continue;
+                if (name != "CyberpunkVR_FixedVrsReportSeq" && name != "CyberpunkVR_FixedVrsReport" &&
+                    !name.StartsWith("CyberpunkVR_SceneGpu", StringComparison.Ordinal)) continue;
                 int ordinal = BitConverter.ToUInt16(ordinalTable, i * 2);
                 if (ordinal >= functionCount) throw new InvalidOperationException("Export ordinal out of bounds.");
                 uint rva = BitConverter.ToUInt32(functionTable, ordinal * 4);
-                if (name.EndsWith("Seq", StringComparison.Ordinal)) sequenceRva = rva; else reportRva = rva;
+                this.exports[name] = rva;
+                if (name == "CyberpunkVR_FixedVrsReportSeq") sequenceRva = rva;
+                if (name == "CyberpunkVR_FixedVrsReport") reportRva = rva;
             }
             if (sequenceRva == 0 || reportRva == 0) throw new InvalidOperationException("VRS report exports unavailable in this DLL.");
         }
@@ -77,18 +93,42 @@ public sealed class CpvrVrsReader : IDisposable
     }
 
     // Match the producer's odd/even sequence protocol. Never return a torn JSON report.
-    public string Snapshot()
+    public string Snapshot() { uint seq; var json=SnapshotReport(sequenceRva,reportRva,1024,out seq);Sequence=seq;return json; }
+
+    // The GPU report uses the same publication protocol but a larger, independently bounded buffer.
+    public string ProfileSnapshot() {
+        uint seq;
+        var json=SnapshotReport(Export("CyberpunkVR_SceneGpuReportSeq"),Export("CyberpunkVR_SceneGpuReport"),262144,out seq);
+        ProfileSequence=seq;return json;
+    }
+    uint Export(string name) {
+        uint rva;
+        if (!exports.TryGetValue(name,out rva)) throw new InvalidOperationException("Missing export: "+name);
+        return rva;
+    }
+    public uint ProfileControl(string name) {
+        if (!controls.Contains(name)) throw new InvalidOperationException("Not a profiler control.");
+        return BitConverter.ToUInt32(Read(Export(name),4),0);
+    }
+    // Writes are constrained to profiler requests/settings; rendering options and arbitrary addresses are inaccessible.
+    public void SetProfileControl(string name,uint value) {
+        if (!profileControl || !controls.Contains(name)) throw new InvalidOperationException("Profiler write not authorized.");
+        uint rva=Export(name);Read(rva,4);UIntPtr written;byte[] data=BitConverter.GetBytes(value);
+        if (!WriteProcessMemory(handle,new IntPtr(moduleBase+rva),data,new UIntPtr(4),out written) || written.ToUInt64()!=4)
+            throw new Win32Exception(Marshal.GetLastWin32Error(),"Unable to request GPU profile.");
+    }
+    string SnapshotReport(uint seqRva,uint dataRva,int size,out uint sequence)
     {
         for (int attempt = 0; attempt < 3; ++attempt)
         {
-            uint before = BitConverter.ToUInt32(Read(sequenceRva, 4), 0);
+            uint before = BitConverter.ToUInt32(Read(seqRva, 4), 0);
             if ((before & 1) != 0) continue;
-            byte[] bytes = Read(reportRva, 1024);
-            uint after = BitConverter.ToUInt32(Read(sequenceRva, 4), 0);
+            byte[] bytes = Read(dataRva, size);
+            uint after = BitConverter.ToUInt32(Read(seqRva, 4), 0);
             if (before != after || (after & 1) != 0) continue;
             int end = Array.IndexOf(bytes, (byte)0);
             if (end < 0) throw new InvalidOperationException("Unterminated report.");
-            Sequence = after;
+            sequence = after;
             return Encoding.UTF8.GetString(bytes, 0, end);
         }
         throw new InvalidOperationException("VRS report busy; retry next sample.");

@@ -1,3 +1,40 @@
+## Medicao completa (versao 4)
+
+No PC do jogo, use **Executar como administrador** em `INICIAR-MEDICAO.cmd`.
+O comando antigo continua apenas com a coleta de processo/VRS. Somente a medicao
+completa pede escrita nos sete controles de diagnostico GPU exportados pela DLL;
+nao injeta codigo nem altera opcoes de renderizacao.
+
+Coloque o console PresentMon 2.6.0 ao lado dos scripts como `PresentMon.exe`.
+[Release oficial](https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0).
+SHA256 x64: `b2a706bc6ad475749e3b7e3409263aa1e6906d45bdcf993f6dbc0f660188f1af`.
+Nao instala servico. A captura usa PID/nome ETW exclusivo e nao encerra sessoes
+de outras ferramentas. Falhas de privilegio/execucao ficam registradas.
+
+Saidas adicionais:
+
+- `frames.csv`: PresentMon v2, CPUStartQPC em ticks brutos. Converter com
+  qpc_frequency do manifesto. Sao frames do swapchain do jogo, nao scanout do HMD.
+- `gpu-profile-NNN.json`: timestamps por faixa e pipeline statistics do RenderElements
+  0x33DDA4; indice 7 de `ps` e PSInvocations. Capturas de quatro frames apos 60s,
+  com 20s de configuracao estavel e repeticao apos 45s. Controles sao restaurados.
+- Eventos `gpu_profile_start/end/error` no JSONL: excluir os intervalos instrumentados
+  e mais dois segundos da comparacao. Capturas incompletas/esgotadas/descartadas,
+  sem estatisticas ou com modo alterado nao sao dados validos. Somas entre queues
+  podem se sobrepor e nao representam o tempo total critico de GPU.
+- `cyberpunkvrport-end.log`: copia do log normal ao encerrar. O log normal ja e ativo;
+  verbose spammy nao e necessario para este benchmark.
+
+Mantenha o overlay FPS igual nas fases e nao rode outro controlador do profiler.
+Analise neste PC, sem Python no PC do jogo:
+`python tools/performance_watch/analyze-frames.py <pasta-da-sessao>`.
+A analise separa fases/swapchains, exclui aquecimento/transicoes, telemetria invalida
+e intervalos instrumentados; calcula media/p95/p99 sem chamar FPS do jogo de FPS do HMD.
+
+Verificacao: leitor 5.1/7, controle/restauracao/limpeza do profiler em 5.1 e tres casos
+de correlacao CSV. Digest/help PresentMon conferidos. ETW local sem elevacao recebeu
+acesso negado; captura real elevada e perfis do jogo aguardam a proxima sessao.
+
 ## Coleta VRS (versao 3)
 
 Execute `INICIAR-COLETA.cmd` **no PC do jogo**, antes ou depois de iniciar o Cyberpunk.

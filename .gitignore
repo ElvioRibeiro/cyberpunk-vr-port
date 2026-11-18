@@ -270,3 +270,6 @@ mods/archive/cyberpunkvrport.archive
 
 # Standalone read-only performance diagnostics.
 !tools/performance_watch/
+tools/performance_watch/PresentMon.exe
+tools/performance_watch/__pycache__/
+tools/performance_watch/tests/__pycache__/
