@@ -296,4 +296,9 @@ add_custom_command(TARGET cyberpunkvrport_stereo POST_BUILD
 #     cmake --build build --config Release --target xr_probe_layer
 add_subdirectory(tools/xr_probe)
 # rtti_dump_plugin -- patch-day RED4ext plugin: the running game's RTTI layouts as JSON (tools/rtti_dump).
-add_subdirectory(tools/rtti_dump)
+# This developer-only tool is absent from some source checkouts and is not a plugin dependency.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/rtti_dump/CMakeLists.txt")
+    add_subdirectory(tools/rtti_dump)
+else()
+    message(STATUS "Optional rtti_dump_plugin unavailable: tools/rtti_dump is absent")
+endif()
