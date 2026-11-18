@@ -328,7 +328,14 @@ pwsh scripts\deploy_stereo.ps1 -GameRoot "<game root>"
 ## Controls
 
 VR controller input is merged into the native CP2077 gamepad, so the in-game
-"Controller" key bindings apply. Default VR mapping, **on foot**:
+"Controller" key bindings apply.
+
+Optional **Controls → General → Thumb rests as L3 / R3** adds each thumb-rest touch
+alongside that hand's stick click (off by default; requires runtime/controller support).
+Touch acts as a held click; physical clicks still work. Touching both rests can invoke
+the existing L3+R3 menu gesture. See [details](docs/thumb-rest-stick-clicks.md).
+
+Default VR mapping, **on foot**:
 
 | Input | Action |
 |---|---|
