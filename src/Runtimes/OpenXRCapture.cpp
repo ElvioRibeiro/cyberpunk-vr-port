@@ -18,6 +18,7 @@ extern "C" int CyberpunkVR_BindPoseToImage;
 #include "Runtimes/RuntimeFovCorrection.hpp"
 #include "Stereo/EngineStereo.hpp"
 #include "Render/Afw.hpp"
+#include "Render/Osr.hpp"
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -913,11 +914,16 @@ void OpenXRManager::ReleaseCapturedRead(ID3D12Resource* resource,uint64_t fence)
 bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const D3D12_RESOURCE_DESC& sourceDesc, uint64_t serial,
     const XrPosef poses[2], const XrFovf fovs[2], const bool hasView[2],const XrPosef headCenters[2]) {
     if (!backBuffer || !hasView[0] || !hasView[1]) {
+        if (cvr::afw::Launch()) cvr::osr::InvalidateHistory();
         CVR_DIAGNOSTIC(CyberpunkVR_DebugCapSkipNoView.fetch_add(1, std::memory_order_relaxed));
         return false;
     }
 
     std::lock_guard<std::mutex> captureLock(m_captureMutex);
+    // Destroy the guard BEFORE releasing the capture lock, so another producer cannot reuse aborted history.
+    cvr::osr::HistoryCapture osrCapture(cvr::afw::Launch());
+    bool osrRecorded = false;
+    bool captureSignaled = false;
     uintptr_t writeResources[2]{};
     cvr::capture::WriteRelease releaseWrites(m_captureLeases,m_presentMutex,writeResources);
     // ENGINE STEREO (Stereo/EngineStereo.hpp): the backbuffer holds both eyes, left eye at [0, W - W/2), right
@@ -943,6 +949,8 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
     // until the intro takes it over -- its last picture standing in once the screen has closed.
     const auto notice = cvr::lobby::intro::Boot();
     const bool loadingInSpace = notice.shown || (engineStereo && cvr::lobby::LoadingInSpace());
+    // Loading may still render consecutively numbered frames; invalidate before Warp as well as on exit.
+    if (cvr::afw::Launch() && (menuOpen || loadingDark || loadingInSpace)) cvr::osr::InvalidateHistory();
     if (!loadingInSpace || notice.shown != m_loadingScreenIsNotice) m_loadingScreen.End();
     m_loadingScreenIsNotice = notice.shown;
     D3D12_RESOURCE_DESC eyeDesc = sourceDesc;
@@ -1394,7 +1402,9 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
             // whole separation further along the camera's right.
             request.ipd = 2.0f * GetDesiredHalfIpd();
             request.out = eyeSlotTex;
+            const bool osrBackend = cvr::afw::UsesOsr();
             vrcamEyeCaptured = cvr::afw::Warp(request);
+            osrRecorded = vrcamEyeCaptured && osrBackend;
         } else {
             cvr::afw::Fallback(!rgba8 ? "backbuffer not R8G8B8A8" : !inputs ? "no depth and motion for the frame"
                                                                            : "no second-eye slot");
@@ -1813,8 +1823,10 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
         m_d3dQueue->ExecuteCommandLists(1,cmdLists);
         ++m_captureFenceValue;
         m_captureAllocatorFence[m_captureAllocatorIndex] = m_captureFenceValue;
-        if (SUCCEEDED(m_d3dQueue->Signal(m_captureFence,m_captureFenceValue)))
+        if (SUCCEEDED(m_d3dQueue->Signal(m_captureFence,m_captureFenceValue))) {
             cvr::gpu::profile::Submitted(gpuProfile, m_d3dQueue, m_captureFence, m_captureFenceValue);
+            captureSignaled = true;
+        }
     }
 
     {
@@ -1872,6 +1884,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
 
     if(cvr::framegen::MetricsEnabled())cvr::framegen::OnRealFrame(serial,cvr::framegen::NowMs());
 
+    if (osrRecorded && captureSignaled && !menuOpen && !loadingDark && !loadingInSpace) osrCapture.Commit();
     snapshot->Release();
     if (g_verboseLog && (serial % 300) == 1) {
         Log("OpenXRManager: Mono frame captured. serial=%llu\n",

@@ -31,14 +31,33 @@ struct Request {
     uint32_t eye = 0;                            // the drawn eye
     ID3D12Resource* out = nullptr;               // the made eye (R8G8B8A8 family, colour size), in COPY_SOURCE state
     bool history = true;                         // use the made eye's previous frame
+    bool resetHistory = false;                   // native reset: discard both histories before recording this frame
+    uint32_t renderFrameId = 0;                  // engine frame counter, including its natural Uint32 wrap
+    bool hasRenderFrameId = false;               // reuse requires consecutive frames drawn for alternating eyes
     uint32_t debug = 0;                          // 1: tint history pixels green, filled ones magenta
     float jitterSign = 1.0f;                     // how the jitter is applied to a depth texel (+1, -1, 0)
 };
 
 // Records the made eye into request.out. False when nothing was recorded (sizes, formats, a failed init).
 bool Record(const Request& request);
-// Forget both eyes' history (a new session, a reset).
+// Forget both eyes' history on the capture/recording thread; resources remain allocated and GPU-ordered.
 void Reset();
+// Thread-safe invalidation request; only Record touches history state or GPU resources.
+void InvalidateHistory();
+
+// A capture only preserves history after its OSR commands and matching images have been published.
+// Leaving a menu/backend/failure path without Commit invalidates the next OSR recording.
+class HistoryCapture {
+    bool active;
+    bool committed = false;
+public:
+    explicit HistoryCapture(bool enabled) : active(enabled) {}
+    HistoryCapture(const HistoryCapture&) = delete;
+    HistoryCapture& operator=(const HistoryCapture&) = delete;
+    ~HistoryCapture() { if (active && !committed) InvalidateHistory(); }
+    // Call only after an OSR capture is successfully submitted and published.
+    void Commit() { committed = true; }
+};
 
 struct Stats { uint64_t recorded = 0, failed = 0; const char* last = ""; };
 Stats Statistics();
