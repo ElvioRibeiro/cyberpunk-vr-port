@@ -73,6 +73,41 @@ function Get-FileIdentity([string]$Path) {
     return @{ path = $item.FullName; bytes = $item.Length; sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 
+# A process-local read-only reader samples the DLL's exported seqlock report.
+# Retry module resolution during startup; permission/unsupported-DLL failures stay visible.
+$vrsCache = @{ reader=$null; retry_at=0.0; sequence=$null; changed_at=0.0; previous=$null; phase=$null }
+if (-not ('CpvrVrsReader' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'VrsReader.cs') }
+function Read-VrsSnapshot([int]$ProcessId,[double]$Elapsed) {
+    try {
+        if (!$vrsCache.reader) {
+            if ($Elapsed -lt $vrsCache.retry_at) { return @{status='retry_pending'} }
+            $vrsCache.reader = [CpvrVrsReader]::new($ProcessId)
+        }
+        $report = $vrsCache.reader.Snapshot() | ConvertFrom-Json
+        $sequence = $vrsCache.reader.Sequence
+        if ($sequence -ne $vrsCache.sequence) { $vrsCache.changed_at=$Elapsed; $vrsCache.sequence=$sequence }
+        if ($null -eq $report.requested) { return @{status='initializing'; sequence=$sequence} }
+        $delta = @($null,$null)
+        if ($vrsCache.previous) {
+            for ($eye=0;$eye -lt 2;++$eye) {
+                $difference=[double]$report.draws[$eye]-[double]$vrsCache.previous.draws[$eye]
+                if ($difference -ge 0) { $delta[$eye]=$difference }
+            }
+        }
+        $phase = '{0}/{1}/{2}' -f $report.requested,$report.applied,$report.stereo
+        $phaseChanged = $phase -ne $vrsCache.phase
+        $vrsCache.phase=$phase; $vrsCache.previous=$report
+        return @{status=$(if ($Elapsed-$vrsCache.changed_at -gt 3) {'stale'} else {'ok'});
+            sequence=$sequence; report_age_s=($Elapsed-$vrsCache.changed_at); report=$report;
+            draws_delta=$delta; phase_changed=$phaseChanged}
+    } catch {
+        if ($vrsCache.reader) { $vrsCache.reader.Dispose(); $vrsCache.reader=$null }
+        $vrsCache.retry_at=$Elapsed+5
+        $vrsCache.previous=$null; $vrsCache.phase=$null
+        return @{status='unavailable'; detail=$_.Exception.Message}
+    }
+}
+
 $targets = if ($TargetPid) { @(Get-Process -Id $TargetPid) } else { @(Get-Process -Name Cyberpunk2077) }
 if ($targets.Count -ne 1) { throw 'Select one running game process with -TargetPid.' }
 $target = $targets[0]
@@ -94,12 +129,13 @@ $session = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) $sessionName
 $encoding = [Text.UTF8Encoding]::new($false)
 $logicalProcessors = [Environment]::ProcessorCount
 $manifest = @{
-    schema = 1; collector_version = 2; collector = Get-FileIdentity $PSCommandPath
+    schema = 1; collector_version = 3; collector = Get-FileIdentity $PSCommandPath
     created_utc = [DateTimeOffset]::UtcNow.ToString('o'); host_name = [Environment]::MachineName
     process_id = $target.Id; process_name = $target.ProcessName; process_start_utc = $target.StartTime.ToUniversalTime().ToString('o')
     game_root = $GameRoot; interval_ms = $IntervalMilliseconds; gpu_interval_s = $GpuIntervalSeconds
     logical_processors = $logicalProcessors; qpc_frequency = [Diagnostics.Stopwatch]::Frequency
-    mode = 'read_only_process_sampling'; gameplay_validated = $false
+    vrs_reader = Get-FileIdentity (Join-Path $PSScriptRoot 'VrsReader.cs')
+    mode = 'read_only_process_sampling_and_vrs_exports'; gameplay_validated = $false
     semantics = 'CPU covers the whole process, not one module/thread. GPU metrics cover the whole adapter. No FPS or photon-latency estimate is inferred.'
 }
 $flightDirectory = $null
@@ -143,6 +179,21 @@ try {
             private_bytes = $target.PrivateMemorySize64; working_set_bytes = $target.WorkingSet64
             virtual_bytes = $target.VirtualMemorySize64; handles = $target.HandleCount; threads = $target.Threads.Count
         }
+        if ($flightDirectory -and $elapsed-$lastGpuSeconds -ge $GpuIntervalSeconds) {
+            try {
+                $row.config_vrs=@{}
+                foreach ($line in [IO.File]::ReadAllLines((Join-Path $GameRoot 'red4ext/plugins/cyberpunkvrport/config/vrport.ini'))) {
+                    if ($line -match '^\s*(xr_vrs(?:_width|_height|_offset_x|_offset_y)?|xr_engine_stereo|xr_osr|xr_afw|xr_mono_mode)\s*=\s*([^;#]+)') {
+                        $row.config_vrs[$Matches[1]]=$Matches[2].Trim()
+                    }
+                }
+            } catch { $row.config_read_error=$_.Exception.Message }
+        }
+        $row.vrs = Read-VrsSnapshot $target.Id $elapsed
+        if ($row.vrs.phase_changed) {
+            $writer.WriteLine((@{type='vrs_change';utc=$row.utc;qpc_ms=$row.qpc_ms;
+                requested=$row.vrs.report.requested;applied=$row.vrs.report.applied;stereo=$row.vrs.report.stereo} | ConvertTo-Json -Compress))
+        }
         $lastTicks = $ticks; $lastCpuMs = $cpuMs
         if ($elapsed - $lastGpuSeconds -ge $GpuIntervalSeconds) {
             $row.gpu_utc = [DateTimeOffset]::UtcNow.ToString('o')
@@ -174,6 +225,7 @@ try {
         $reason = 'interrupted'
     }
     $writer.WriteLine((@{ type = 'stop'; utc = [DateTimeOffset]::UtcNow.ToString('o'); samples = $samples; reason = $reason } | ConvertTo-Json -Compress))
+    if ($vrsCache.reader) { $vrsCache.reader.Dispose() }
     $writer.Dispose()
     $target.Dispose()
     Write-Host ('Collection saved: ' + $session)

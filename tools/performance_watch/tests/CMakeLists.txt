@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+project(VrsReaderFixture LANGUAGES CXX)
+add_library(reader_fixture SHARED report.cpp)
+set_target_properties(reader_fixture PROPERTIES OUTPUT_NAME cyberpunkvrport)
+add_executable(reader_host host.cpp)

@@ -1,3 +1,36 @@
+## Coleta VRS (versao 3)
+
+Execute `INICIAR-COLETA.cmd` **no PC do jogo**, antes ou depois de iniciar o Cyberpunk.
+A janela espera ate 30 minutos pelo jogo e coleta por ate uma hora ou ate ele fechar.
+O resultado fica em `red4ext/plugins/cyberpunkvrport/log/performance-watch/<sessao>/`.
+
+A versao 3 adiciona leitura somente de memoria dos exports `CyberpunkVR_FixedVrsReport`
+e `CyberpunkVR_FixedVrsReportSeq`, com ASLR e verificacao da sequencia antes/depois.
+Nao injeta DLL, nao escreve no processo e nao modifica configuracoes.
+Requer PowerShell 64 bits e permissao para ler o processo. O `.cmd` usa Windows
+PowerShell 5.1; o leitor tambem foi verificado no PowerShell 7.
+
+`process.jsonl` inclui `vrs.report` (modo solicitado/efetivo, stereo, mapas e contadores),
+`vrs.draws_delta` por olho, sequencia/idade e eventos `vrs_change` automaticos.
+Valores ausentes ficam indisponiveis, sem inventar zeros. Relatorio congelado por mais
+de tres segundos fica `stale`; modulo ainda ausente e erros de leitura ficam explicitos.
+As configuracoes VRS do INI sao lidas a cada cinco segundos por padrao: sao a configuracao
+salva, nao prova de aplicacao da regiao pela GPU. Manifesto registra hash da DLL, INI,
+coletor e fonte C# do leitor.
+
+Para comparar, mantenha cena/resolucao/upscaler constantes e faca Off -> 2x2 -> Off,
+com cerca de dois minutos em cada fase. Feche F10 durante a medicao e confirme que
+os deltas L/R aumentam com VRS ligado. Fases menores que o intervalo de amostragem
+podem nao ser capturadas. O observador le os JSONL pela rede durante o teste.
+`MARCAR-EVENTO.cmd` permite anotar uma situacao/artefato com UTC em `markers.jsonl`.
+
+CPU e memoria sao do processo; NVIDIA/VRAM/clocks sao do adaptador inteiro. Nenhum FPS,
+frametime, tempo GPU por passagem ou ganho causal e inferido desses campos.
+O headset continua necessario para julgar qualidade binocular e cintilacao.
+
+Regressoes: `tests/verify.ps1` compila uma DLL/host sinteticos e valida leitura real,
+transicoes, deltas, relatorio congelado/ocupado e modulo ausente. Nao carrega o jogo.
+
 # Coleta de desempenho no PC do jogo
 
 Versão 2 do coletor (17/11/2026): preserva frações de núcleo no cálculo de CPU

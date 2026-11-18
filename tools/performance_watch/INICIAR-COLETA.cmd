@@ -1,5 +1,5 @@
 @echo off
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-collection.ps1"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-collection.ps1"
 echo.
-echo Pode fechar esta janela quando terminar a rodada.
+echo Coleta encerrada; os arquivos estao em log/performance-watch.
 pause
