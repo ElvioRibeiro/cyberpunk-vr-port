@@ -2,18 +2,44 @@
 #include "Camera/ImagePoseIdentity.hpp"
 #include <array>
 #include <mutex>
+#include <limits>
 
 namespace cvr::vrui {
 namespace {
 std::mutex canvasMutex;
-std::array<std::shared_ptr<Canvas>,3> pool;
-std::shared_ptr<Canvas> latest;
+struct CanvasSlot {
+    std::shared_ptr<Canvas> canvas;
+    bool published=false;
+};
+std::array<CanvasSlot,3> pool;
 uint64_t serial=0;
+
+// A removed device reports UINT64_MAX, which is not successful GPU completion.
+bool Completed(const Canvas& canvas){
+    if(!canvas.fence)return false;
+    const auto completed=canvas.fence->GetCompletedValue();
+    return completed!=std::numeric_limits<uint64_t>::max() && completed>=canvas.value;
 }
+
+// Lease the newest finished publication under the pool lock. A producer cannot reuse
+// its texture until both this lease and the panel's in-flight copy have been released.
+std::shared_ptr<Canvas> LatestCompletedCanvas(){
+    std::lock_guard lock(canvasMutex);
+    std::shared_ptr<Canvas> result;
+    for(const auto& slot:pool){
+        if(slot.published && slot.canvas && Completed(*slot.canvas) &&
+           (!result || slot.canvas->serial>result->serial))result=slot.canvas;
+    }
+    return result;
+}
+}
+// Reuse only unleased, GPU-idle slots and withdraw their previous publication
+// before the producer starts recording a new canvas into them.
 std::shared_ptr<Canvas> AcquireCanvas(ID3D12Device* device,DXGI_FORMAT format){
     std::lock_guard lock(canvasMutex);
-    for(auto& slot:pool){
-        if(slot && (slot.use_count()!=1 || (slot->fence && slot->fence->GetCompletedValue()<slot->value)))continue;
+    for(auto& entry:pool){
+        auto& slot=entry.canvas;
+        if(slot && (slot.use_count()!=1 || (slot->fence && !Completed(*slot))))continue;
         if(slot && slot->format!=format)slot.reset();
         if(!slot){
             auto c=std::make_shared<Canvas>();D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
@@ -25,19 +51,36 @@ std::shared_ptr<Canvas> AcquireCanvas(ID3D12Device* device,DXGI_FORMAT format){
             D3D12_RENDER_TARGET_VIEW_DESC rd{};rd.Format=format;rd.ViewDimension=D3D12_RTV_DIMENSION_TEXTURE2D;
             device->CreateRenderTargetView(c->texture.Get(),&rd,c->rtv->GetCPUDescriptorHandleForHeapStart());c->format=format;slot=c;
         }
+        entry.published=false;
         return slot;
     }
     return {};
 }
-void PublishCanvas(const std::shared_ptr<Canvas>& c,ID3D12Fence* f,uint64_t value){std::lock_guard lock(canvasMutex);c->fence=f;c->value=value;c->serial=++serial;latest=c;}
-void ClearCanvas(){std::lock_guard lock(canvasMutex);latest.reset();for(auto& p:pool)if(p && p.use_count()==1 && (!p->fence || p->fence->GetCompletedValue()>=p->value))p.reset();}
+// Publish only after the producer has successfully signalled its queue fence.
+void PublishCanvas(const std::shared_ptr<Canvas>& c,ID3D12Fence* f,uint64_t value){
+    std::lock_guard lock(canvasMutex);
+    for(auto& slot:pool)if(slot.canvas==c && c){
+        c->fence=f;c->value=value;c->serial=++serial;slot.published=true;break;
+    }
+}
+// Withdraw even leased publications so closing/reopening cannot select old content.
+// Resources still owned by either GPU queue remain alive until their leases expire.
+void ClearCanvas(){
+    std::lock_guard lock(canvasMutex);
+    for(auto& slot:pool){
+        slot.published=false;
+        auto& canvas=slot.canvas;
+        if(canvas && canvas.use_count()==1 && (!canvas->fence || Completed(*canvas)))canvas.reset();
+    }
+}
+// Never sample an unfinished producer canvas on the runtime's independent queue.
+// When no update is ready, keep submitting the last released swapchain image.
 const XrCompositionLayerBaseHeader* Panel::Prepare(XrSession session,XrSpace space,ID3D12Device* device,ID3D12CommandQueue* queue){
     rayVisible=false;
     if(!Visible()){Shutdown();return nullptr;}
     const auto view=GetView();if(!view.valid || !device || !queue)return nullptr;
-    std::shared_ptr<Canvas> source;{std::lock_guard lock(canvasMutex);source=latest;}
-    if(!source)return nullptr;
-    // Same queue as the producer. Hold its lease until this copy has completed.
+    auto source=LatestCompletedCanvas();
+    if(!source && !swapchain)return nullptr;
     if(!swapchain){
         uint32_t count=0;if(XR_FAILED(xrEnumerateSwapchainFormats(session,0,&count,nullptr)))return nullptr;
         std::vector<int64_t> formats(count);if(XR_FAILED(xrEnumerateSwapchainFormats(session,count,&count,formats.data())))return nullptr;
@@ -56,7 +99,7 @@ const XrCompositionLayerBaseHeader* Panel::Prepare(XrSession session,XrSpace spa
     }
     if(fence->GetCompletedValue()>=fenceValue){
         flight.reset();
-        if(lastSerial!=source->serial || acquired){
+        if(source && source->serial>=lastSerial && (lastSerial<source->serial || acquired)){
             if(!acquired){XrSwapchainImageAcquireInfo a{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};if(XR_SUCCEEDED(xrAcquireSwapchainImage(swapchain,&a,&index)))acquired=true;}
             if(acquired){XrSwapchainImageWaitInfo w{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};w.timeout=0;
                 if(xrWaitSwapchainImage(swapchain,&w)==XR_SUCCESS){

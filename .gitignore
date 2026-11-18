@@ -265,5 +265,6 @@ tools/mirror/*
 mods/archive/cyberpunkvrport.archive
 
 # Haptics regression fixtures; generated output stays local.
+!tools/vr_panel_tests/
 !tools/psvr2_input_tests/stubs/
 /build-haptics-tests/
