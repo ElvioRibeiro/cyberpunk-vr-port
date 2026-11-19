@@ -3,6 +3,8 @@
 #include "Runtimes/FingerGrip.hpp"
 #include "Utils/DebugGate.hpp"
 #include "Core/LiveControls.hpp"
+#include "Core/HeadsetSelection.hpp"
+#include "Runtimes/ThumbRestSupport.hpp"
 #include "Runtimes/Psvr2HapticChannel.hpp"
 #include "Render/CommandResources.hpp"
 #include "Render/GpuStageProfile.hpp"
@@ -1623,6 +1625,10 @@ DWORD OpenXRManager::FrameThreadMain() {
                 syncInfo.countActiveActionSets = 1;
                 syncInfo.activeActionSets = &activeActionSet;
                 XrResult syncRes = xrSyncActions(m_session, &syncInfo);
+                m_thumbRestSupported.store(m_thumbRestTouchAction != XR_NULL_HANDLE &&
+                    cvr::input::QueryThumbRestSupport(syncRes, m_systemName, m_session,
+                                                     m_handPaths, m_thumbRestProfile),
+                    std::memory_order_relaxed);
                 // Vibration queued since the last frame, played where the actions are synced.
                 if (XR_SUCCEEDED(syncRes) && m_sessionState == XR_SESSION_STATE_FOCUSED) cvr::haptics::Tick();
                 else cvr::haptics::Clear();
@@ -1887,7 +1893,9 @@ DWORD OpenXRManager::FrameThreadMain() {
                             return st.currentState;
                         return 0.0f;
                     };
-                    const bool thumbRestClick=g_liveControls.xrThumbRestStickClick!=0;
+                    // Ignore saved preferences on other headsets and cached touch after a failed sync.
+                    const bool thumbRestClick=IsThumbRestSupported() &&
+                        g_liveControls.xrThumbRestStickClick!=0 && syncRes==XR_SUCCESS;
                     auto getBool = [&](XrAction a) -> bool {
                         XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
                         gi.action = a;

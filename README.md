@@ -330,8 +330,11 @@ pwsh scripts\deploy_stereo.ps1 -GameRoot "<game root>"
 VR controller input is merged into the native CP2077 gamepad, so the in-game
 "Controller" key bindings apply.
 
-Optional **Controls → General → Thumb rests as L3 / R3** adds each thumb-rest touch
+Optional **Controls → Meta Quest → Thumb rests as L3 / R3** adds each thumb-rest touch
 alongside that hand's stick click (off by default; requires runtime/controller support).
+The Meta Quest section appears and operates only with Quest 2, Quest 3S or Quest 3
+selected in the launcher and matching OpenXR Quest identity and Touch controller profiles.
+This mapping is provisional until control rebinding and fine tuning are implemented.
 Touch acts as a held click; physical clicks still work. Touching both rests can invoke
 the existing L3+R3 menu gesture. See [details](docs/thumb-rest-stick-clicks.md).
 

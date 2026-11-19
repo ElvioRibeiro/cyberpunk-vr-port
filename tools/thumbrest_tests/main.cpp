@@ -1,5 +1,7 @@
 #include <openxr/openxr.h>
 #include "Core/LiveControls.hpp"
+#include "Core/HeadsetSelection.hpp"
+#include "Runtimes/ThumbRestSupport.hpp"
 #include "Hooks/ScannerGesture.hpp"
 #include "Overlay/VrInteraction.hpp"
 #include <array>
@@ -7,11 +9,22 @@
 #include <stdexcept>
 
 LiveControls g_liveControls{};
+int selectedHeadset{};
+// Supply the launcher selection API used by the production Quest gate.
+extern "C" int GetCurrentHmdType() { return selectedHeadset; }
 namespace {
 struct Button { bool down{}, active=true, failed{}; };
 std::array<std::array<Button,2>,2> buttons;
 unsigned restQueries{};
+constexpr XrPath touchProfile=10;
+std::array<XrPath,2> profiles{touchProfile,touchProfile};
+bool profileQueryFails{};
 void Check(bool condition,const char* message) { if(!condition)throw std::runtime_error(message); }
+}
+// Expose actual per-hand profiles independently of the launcher and touch state.
+extern "C" XrResult XRAPI_CALL xrGetCurrentInteractionProfile(XrSession,XrPath hand,XrInteractionProfileState* out) {
+    out->interactionProfile=profiles.at(static_cast<size_t>(hand)-1);
+    return profileQueryFails ? XR_ERROR_RUNTIME_FAILURE : XR_SUCCESS;
 }
 extern "C" XrResult XRAPI_CALL xrGetActionStateBoolean(XrSession,const XrActionStateGetInfo* info,XrActionStateBoolean* out) {
     const auto action=reinterpret_cast<uintptr_t>(info->action)-1;
@@ -23,11 +36,17 @@ extern "C" XrResult XRAPI_CALL xrGetActionStateBoolean(XrSession,const XrActionS
 }
 
 struct InputFixture {
-    XrSession m_session{};
+    XrResult syncRes=XR_SUCCESS;
+    XrSession m_session=reinterpret_cast<XrSession>(1);
+    const char* systemName="Meta Quest 3";
     XrPath m_handPaths[2]{1,2};
     XrAction m_thumbstickClickAction=reinterpret_cast<XrAction>(1);
     XrAction m_thumbRestTouchAction=reinterpret_cast<XrAction>(2);
     bool leftClickValid{};
+    // Exercise the production post-sync policy shared by activation and UI visibility.
+    bool IsThumbRestSupported() const {
+        return cvr::input::QueryThumbRestSupport(syncRes,systemName,m_session,m_handPaths,touchProfile);
+    }
     // Run exactly the production acquisition/merge for one physical hand.
     bool Sample(int i) {
         leftClickValid=false;
@@ -46,6 +65,52 @@ int main() try {
     Check(input.Sample(0),"Physical click lost with fallback off");
     g_liveControls.xrThumbRestStickClick=1;
     buttons[0][0].down=false;
+    // A saved enabled preference must not affect any non-Quest launcher preset.
+    for (int headset=-1; headset<=19; ++headset) {
+        selectedHeadset=headset;
+        const bool quest=headset==0 || headset==1 || headset==2;
+        const unsigned queriesBefore=restQueries;
+        Check(input.Sample(0)==quest,"Launcher headset isolation failed");
+        Check(quest || restQueries==queriesBefore,"Non-Quest headset queried thumb rest");
+        buttons[0][0].down=true;
+        Check(input.Sample(0),"Headset gate suppressed physical click");
+        buttons[0][0].down=false;
+    }
+    selectedHeadset=2;
+    // A Quest selection alone must not expose or activate the option on Steam Frame.
+    for (const char* name : {"Steam Frame", "PICO 4", "Valve Index", "PSVR2", "Oculus Rift S", "", "Meta Quest 4"}) {
+        input.systemName=name;
+        Check(!input.IsThumbRestSupported() && !input.Sample(0),"Non-Quest OpenXR identity accepted");
+    }
+    for (const char* name : {"Oculus Quest2", "Meta Quest 3S", "META QUEST 3", "Quest 2"}) {
+        input.systemName=name;
+        Check(input.IsThumbRestSupported() && input.Sample(0),"Supported OpenXR Quest name rejected");
+    }
+    input.systemName=nullptr;
+    Check(!input.IsThumbRestSupported(),"Missing OpenXR identity accepted");
+    input.systemName="Meta Quest 3";
+    // Even an emulated Quest name cannot pass when either active profile is incompatible.
+    for (int hand=0; hand<2; ++hand) {
+        for (XrPath profile : {XrPath(XR_NULL_PATH), XrPath(20)}) {
+            profiles[hand]=profile;
+            Check(!input.IsThumbRestSupported() && !input.Sample(0),"Mismatched or unbound profile accepted");
+            buttons[0][0].down=true;
+            Check(input.Sample(0),"OpenXR eligibility gate suppressed physical click");
+            buttons[0][0].down=false;
+        }
+        profiles[hand]=touchProfile;
+    }
+    profileQueryFails=true;
+    Check(!input.IsThumbRestSupported() && !input.Sample(0),"Failed profile query accepted");
+    profileQueryFails=false;
+    Check(input.Sample(0),"Matching profiles did not restore support");
+    // Simulate a failed sync while the runtime still exposes its previous active touch.
+    input.syncRes=XR_ERROR_RUNTIME_FAILURE;
+    const unsigned queriesBeforeFailure=restQueries;
+    Check(!input.Sample(0) && restQueries==queriesBeforeFailure,"Failed sync accepted cached touch");
+    input.syncRes=XR_SESSION_NOT_FOCUSED;
+    Check(!input.Sample(0),"Unfocused sync accepted touch");
+    input.syncRes=XR_SUCCESS;
     Check(input.Sample(0) && input.leftClickValid,"Active rest did not provide a valid L3");
     Check(!input.Sample(1),"Left thumb rest leaked into right hand");
     buttons[0][1].active=false;

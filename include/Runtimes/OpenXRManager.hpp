@@ -881,6 +881,8 @@ public:
 
     float GetRuntimeHorizontalFovDeg() const { return m_runtimeHorizontalFovDeg.load(std::memory_order_relaxed); }
     const char* GetSystemName() const { return m_systemName; }
+    // Shared eligibility for the Quest-only UI and synthetic stick-click input.
+    bool IsThumbRestSupported() const;
     // The largest image one eye can be given: the runtime's swapchain maximum and every view's image-rect
     // maximum, whichever is smaller. False until Init has read them.
     bool GetEyeImageLimit(uint32_t* width, uint32_t* height) const {
@@ -982,6 +984,8 @@ private:
     XrAction m_gripForceAction = XR_NULL_HANDLE;         // Float, per hand: squeezed past closed. Index only
     XrAction m_thumbstickClickAction = XR_NULL_HANDLE;   // Bool, per hand (L3/R3)
     XrAction m_thumbRestTouchAction = XR_NULL_HANDLE;    // Bool, per hand; optional stick-click fallback
+    XrPath m_thumbRestProfile = XR_NULL_PATH;
+    std::atomic<bool> m_thumbRestSupported{false};
     XrAction m_primaryButtonAction = XR_NULL_HANDLE;     // Bool, per hand (X / A)
     XrAction m_secondaryButtonAction = XR_NULL_HANDLE;   // Bool, per hand (Y / B)
     XrAction m_menuButtonAction = XR_NULL_HANDLE;        // Bool, global menu/start action

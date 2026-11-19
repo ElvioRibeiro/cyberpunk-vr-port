@@ -7,6 +7,8 @@
 #include "Runtimes/FingerGrip.hpp"
 #include "Utils/DebugGate.hpp"
 #include "Core/LiveControls.hpp"
+#include "Core/HeadsetSelection.hpp"
+#include "Runtimes/ThumbRestSupport.hpp"
 #include "Runtimes/HybridBodyYaw.hpp"
 #include "Anim/WheelGrab.hpp"   // the wheel-grab blends, for the hand smoothing below
 #include "Runtimes/OpenXRManager.hpp"
@@ -850,7 +852,11 @@ bool OpenXRManager::Init() {
             makeAction(m_gripAction,            XR_ACTION_TYPE_FLOAT_INPUT,    "grip",             "Grip",                 true);
             makeAction(m_gripForceAction,       XR_ACTION_TYPE_FLOAT_INPUT,    "grip_force",       "Grip Force",           true);
             makeAction(m_thumbstickClickAction, XR_ACTION_TYPE_BOOLEAN_INPUT,  "thumbstick_click", "Thumbstick Click",     true);
-            makeAction(m_thumbRestTouchAction, XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_rest_touch", "Thumb Rest Touch", true);
+            // Require both launcher selection and OpenXR system identity before binding.
+            if (cvr::IsMetaQuestSelected() && cvr::input::IsSupportedQuestSystem(m_systemName)) {
+                makeAction(m_thumbRestTouchAction, XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_rest_touch", "Thumb Rest Touch", true);
+                xrStringToPath(m_instance, "/interaction_profiles/oculus/touch_controller", &m_thumbRestProfile);
+            }
             makeAction(m_primaryButtonAction,   XR_ACTION_TYPE_BOOLEAN_INPUT,  "primary_button",   "Primary Button (A/X)", true);
             makeAction(m_secondaryButtonAction, XR_ACTION_TYPE_BOOLEAN_INPUT,  "secondary_button", "Secondary Button (B/Y)", true);
             makeAction(m_menuButtonAction, XR_ACTION_TYPE_BOOLEAN_INPUT,
@@ -1285,6 +1291,7 @@ bool OpenXRManager::BeginSession() {
 }
 
 void OpenXRManager::EndSession() {
+    m_thumbRestSupported.store(false, std::memory_order_relaxed);
     if (m_session == XR_NULL_HANDLE || !m_sessionRunning.load(std::memory_order_relaxed)) return;
     xrEndSession(m_session);
     m_sessionRunning.store(false, std::memory_order_relaxed);
@@ -2493,6 +2500,11 @@ void OpenXRManager::FlushHandsToShared(const OpenXRHeadPose* frameHead, XrTime f
 // [OnPresent() moved to openxr_present.cpp]
 
 
+// Use the same post-sync OpenXR validation for UI visibility and input activation.
+bool OpenXRManager::IsThumbRestSupported() const {
+    return cvr::IsMetaQuestSelected() && m_thumbRestSupported.load(std::memory_order_relaxed);
+}
+
 void OpenXRManager::Shutdown() {
     cvr::haptics::StopVehicleAudioCapture();
     cvr::haptics::Clear();
@@ -2608,6 +2620,9 @@ void OpenXRManager::Shutdown() {
     m_gripForceAction = XR_NULL_HANDLE;
     m_thumbstickClickAction = XR_NULL_HANDLE;
     m_thumbRestTouchAction = XR_NULL_HANDLE;
+    m_thumbRestSupported.store(false, std::memory_order_relaxed);
+    m_thumbRestProfile = XR_NULL_PATH;
+    m_systemName[0] = '\0';
     m_primaryButtonAction = XR_NULL_HANDLE;
     m_secondaryButtonAction = XR_NULL_HANDLE;
     m_menuButtonAction = XR_NULL_HANDLE;

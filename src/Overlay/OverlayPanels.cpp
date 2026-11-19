@@ -20,6 +20,7 @@
 #include "Utils/SharedSlots.hpp"
 #include "Runtimes/WristBase.hpp"
 #include "Core/VrCoreShared.hpp"
+#include "Core/HeadsetSelection.hpp"
 #include "Overlay/ImGuiOverlay.hpp"
 #include "Overlay/LiveControlsUi.hpp"
 #include "Runtimes/OpenXRManager.hpp"
@@ -1181,19 +1182,26 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
 
         if (section>=0 ? section==3 : UI::BeginTabItem("CONTROLS")) {
             static int page=0;
-            static const char* pages[]={"GENERAL","DRIVING","BINDINGS"};
-            widgets::Tabs("controls-pages",page,pages,3);
+            const bool questSupported=OpenXRManager::Get().IsThumbRestSupported();
+            static const char* pages[]={"GENERAL","DRIVING","BINDINGS","META QUEST"};
+            // Revoke a selected device page as soon as OpenXR validation stops matching.
+            if (!questSupported && page==3) page=0;
+            widgets::Tabs("controls-pages",page,pages,questSupported ? 4 : 3);
             if(page==1)changed|=DrawDrivingControls(state);
             else if(page==2)widgets::DrawBindings();
+            else if(page==3 && questSupported) {
+                UI::TextWrapped("Temporary Meta Quest controls, available when the launcher selection and OpenXR headset/controller checks agree.");
+                UI::TextWrapped("This provisional mapping will be replaced by a control rebinding and fine-tuning system.");
+                changed |= CheckboxInt("Thumb rests as L3 / R3", &state.xrThumbRestStickClick);
+                if (UI::IsItemHovered()) {
+                    UI::SetTooltip("Left stick click OR left thumb-rest touch; right stick click OR right thumb-rest touch.\n"
+                                   "Touch acts as a held click. Physical clicks still work. Requires thumb-rest touch support.\n"
+                                   "Touching both rests also activates the existing L3 + R3 menu gesture.");
+                }
+            }
             else {
             UI::TextWrapped("Movement, weapon aiming and physical interaction shortcuts.");
 
-            changed |= CheckboxInt("Thumb rests as L3 / R3", &state.xrThumbRestStickClick);
-            if (UI::IsItemHovered()) {
-                UI::SetTooltip("Left stick click OR left thumb-rest touch; right stick click OR right thumb-rest touch.\n"
-                               "Touch acts as a held click. Physical clicks still work. Requires thumb-rest touch support.\n"
-                               "Touching both rests also activates the existing L3 + R3 menu gesture.");
-            }
             changed |= CheckboxInt("Left-handed controls", &state.xrLeftHanded);
             if (UI::IsItemHovered()) {
                 UI::SetTooltip("The two controllers trade roles: the left trigger fires and the right one aims,\n"
